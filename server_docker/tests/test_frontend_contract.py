@@ -56,6 +56,32 @@ class FrontendContractTests(unittest.TestCase):
         self.assertIn("@media", css)
         self.assertIn(".workspace-grid", css)
 
+    def test_titled_thumbnail_history_bundle_and_wechat_contract(self):
+        js = (ROOT / "static" / "app.js").read_text("utf-8")
+        history = (ROOT / "templates" / "history.html").read_text("utf-8")
+        self.assertIn("job.title || job.id", js)
+        self.assertIn("job.thumbnail?.download_path", js)
+        self.assertIn("job.bundle?.download_path", js)
+        self.assertIn("下载全部", js)
+        self.assertIn("function openInWeChat", js)
+        self.assertIn("navigator.clipboard.writeText", js)
+        self.assertIn('"weixin://"', js)
+        self.assertIn('target = "_blank"', js)
+        self.assertIn('rel = "noopener noreferrer"', js)
+        self.assertIn("job.title", js[js.index("const visible = jobs.filter"):])
+        self.assertIn("按标题", history)
+
+    def test_workspace_template_has_title_thumbnail_and_source_action_slots(self):
+        index = (ROOT / "templates" / "index.html").read_text("utf-8")
+        for token in ['id="result-title"', 'id="result-thumbnail"', 'id="result-source-actions"']:
+            self.assertIn(token, index)
+
+    def test_mobile_header_wraps_actions_instead_of_overflowing(self):
+        css = (ROOT / "static" / "app.css").read_text("utf-8")
+        self.assertIn(".app-header{flex-wrap:wrap", css)
+        self.assertIn(".header-actions{width:100%", css)
+        self.assertNotIn(".theme-control{margin-left:auto}", css)
+
 
 if __name__ == "__main__":
     unittest.main()

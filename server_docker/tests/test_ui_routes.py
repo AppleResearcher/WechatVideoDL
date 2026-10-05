@@ -39,6 +39,9 @@ class UiRouteTests(unittest.TestCase):
             'id="download-mp4"',
             'id="parse-button"',
             'id="result-panel"',
+            'id="result-title"',
+            'id="result-thumbnail"',
+            'id="result-source-actions"',
             'data-page="workspace"',
         ]:
             self.assertIn(token, html)

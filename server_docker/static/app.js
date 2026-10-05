@@ -89,11 +89,17 @@
           body: JSON.stringify({ url, prompt: promptInput.value.trim() || null, preset_id: presetSelect.value || null, output_format: outputFormat.value, download: downloadMp4.checked })
         });
         resultContent.classList.remove("hidden"); setStatus(resultStatus, "已完成", "completed");
+        $("result-title").textContent = data.title || data.id || "微信视频号";
+        const resultThumb = $("result-thumbnail");
+        if (data.thumbnail?.download_path) { resultThumb.src = data.thumbnail.download_path; resultThumb.classList.remove("hidden"); }
+        else { resultThumb.removeAttribute("src"); resultThumb.classList.add("hidden"); }
+        renderSourceActions($("result-source-actions"), data.source_url || url);
         $("result-id").textContent = data.id || "—"; $("result-attempts").textContent = `${data.attempts_used || 1} / ${data.max_attempts || 3}`; $("result-format").textContent = (data.output_format || "txt").toUpperCase();
         analysisContent.textContent = data.content || ""; technicalJson.textContent = JSON.stringify(data, null, 2);
         retryNotice.classList.toggle("hidden", !(data.retry_errors || []).length);
         retryNotice.textContent = (data.retry_errors || []).length ? `任务曾遇到 ${data.retry_errors.length} 次临时错误，后台已自动恢复。` : "";
         downloadLinks.replaceChildren();
+        if (data.bundle?.download_path) downloadLinks.appendChild(downloadLink(data.bundle.download_path, "下载全部"));
         if (data.text?.download_path) downloadLinks.appendChild(downloadLink(data.text.download_path, `下载 ${(data.output_format || "txt").toUpperCase()}`));
         if (data.video?.download_path) downloadLinks.appendChild(downloadLink(data.video.download_path, "下载 MP4"));
       } catch (error) {
@@ -114,12 +120,41 @@
     const a = document.createElement("a"); a.className = "download-pill"; a.href = path; a.textContent = label; return a;
   }
 
+  function sourceLink(url, label = "打开原链接") {
+    const a = document.createElement("a");
+    a.className = "source-link"; a.href = url; a.textContent = label;
+    a.target = "_blank"; a.rel = "noopener noreferrer";
+    return a;
+  }
+
+  async function openInWeChat(url) {
+    let copied = false;
+    try { await navigator.clipboard.writeText(url); copied = true; }
+    catch (_) { copied = false; }
+    if (!copied) window.prompt("请复制视频号链接，然后在微信中打开：", url);
+    window.location.href = "weixin://";
+  }
+
+  function wechatButton(url) {
+    const button = document.createElement("button");
+    button.className = "text-button wechat-button"; button.type = "button"; button.textContent = "微信打开";
+    button.addEventListener("click", () => openInWeChat(url));
+    return button;
+  }
+
+  function renderSourceActions(container, url) {
+    if (!container) return;
+    container.replaceChildren();
+    if (!url) return;
+    container.append(sourceLink(url), wechatButton(url));
+  }
+
   async function initHistory() {
     const root = $("history-list"), filter = $("history-filter"), refresh = $("refresh-history");
     let jobs = [];
     const render = () => {
       const q = (filter.value || "").trim().toLowerCase();
-      const visible = jobs.filter((job) => !q || [job.id, job.input_url, job.prompt, job.preset_name].some((v) => String(v || "").toLowerCase().includes(q)));
+      const visible = jobs.filter((job) => !q || [job.title, job.id, job.source_url, job.input_url, job.prompt, job.preset_name].some((v) => String(v || "").toLowerCase().includes(q)));
       root.replaceChildren();
       if (!visible.length) { const empty = document.createElement("div"); empty.className = "history-empty panel"; empty.textContent = q ? "没有匹配的历史记录。" : "还没有历史记录，完成一次解析后会出现在这里。"; root.appendChild(empty); return; }
       visible.forEach((job) => root.appendChild(historyCard(job, load)));
@@ -134,28 +169,39 @@
 
   function historyCard(job, reload) {
     const card = document.createElement("article"); card.className = "history-card panel";
+    const titleText = job.title || job.id;
+    const visual = document.createElement("div"); visual.className = "history-visual";
+    if (job.thumbnail?.download_path) {
+      const img = document.createElement("img"); img.className = "history-thumbnail"; img.src = job.thumbnail.download_path; img.alt = `${titleText} 缩略图`; visual.appendChild(img);
+    } else {
+      const placeholder = document.createElement("div"); placeholder.className = "history-thumbnail-placeholder"; placeholder.textContent = "VIDEO"; visual.appendChild(placeholder);
+    }
     const main = document.createElement("div"); main.className = "history-main";
+    const heading = document.createElement("h3"); heading.className = "history-title"; heading.textContent = titleText;
     const top = document.createElement("div"); top.className = "history-topline";
     const id = document.createElement("span"); id.className = "history-id"; id.textContent = job.id;
     const badge = document.createElement("span"); setStatus(badge, job.status === "completed" ? "已完成" : job.status === "failed" ? "失败" : "进行中", job.status);
     const date = document.createElement("span"); date.className = "history-date"; date.textContent = fmtDate(job.created_at);
     top.append(id, badge, date);
-    const source = document.createElement("span"); source.className = "history-source"; source.textContent = job.input_url || "";
+    const sourceActions = document.createElement("div"); sourceActions.className = "source-actions history-source-actions";
+    renderSourceActions(sourceActions, job.source_url || job.input_url || "");
     const prompt = document.createElement("p"); prompt.className = "history-prompt"; prompt.textContent = job.prompt || "未设置 Prompt";
-    main.append(top, source, prompt);
+    main.append(heading, top, sourceActions, prompt);
     const actions = document.createElement("div"); actions.className = "history-actions";
+    if (job.bundle?.download_path) actions.appendChild(downloadLink(job.bundle.download_path, "下载全部"));
     if (job.text?.download_path) actions.appendChild(downloadLink(job.text.download_path, `下载 ${(job.output_format || "txt").toUpperCase()}`));
     if (job.video?.download_path) actions.appendChild(downloadLink(job.video.download_path, "MP4"));
     const detailBtn = document.createElement("button"); detailBtn.className = "text-button"; detailBtn.type = "button"; detailBtn.textContent = "详情";
     const del = document.createElement("button"); del.className = "danger-button"; del.type = "button"; del.textContent = "删除";
-    actions.append(detailBtn, del); card.append(main, actions);
+    actions.append(detailBtn, del); card.append(visual, main, actions);
     const detail = document.createElement("div"); detail.className = "history-detail hidden"; const pre = document.createElement("pre"); detail.appendChild(pre); card.appendChild(detail);
     detailBtn.addEventListener("click", async () => { if (!detail.classList.contains("hidden")) { detail.classList.add("hidden"); return; } try { const data = await safeFetch(routePath(`api/history/${encodeURIComponent(job.id)}`)); pre.textContent = data.job.content || data.job.error_message || "没有文本内容"; detail.classList.remove("hidden"); } catch (e) { pre.textContent = e.message; detail.classList.remove("hidden"); } });
-    del.addEventListener("click", async () => { if (!window.confirm(`确定删除 ${job.id} 及其关联文件吗？此操作不可恢复。`)) return; del.disabled = true; try { await safeFetch(routePath(`api/history/${encodeURIComponent(job.id)}`), { method: "DELETE" }); await reload(); } catch (e) { window.alert(e.message); del.disabled = false; } });
+    del.addEventListener("click", async () => { if (!window.confirm(`确定删除《${titleText}》及其关联文件吗？此操作不可恢复。`)) return; del.disabled = true; try { await safeFetch(routePath(`api/history/${encodeURIComponent(job.id)}`), { method: "DELETE" }); await reload(); } catch (e) { window.alert(e.message); del.disabled = false; } });
     return card;
   }
 
+
   if (page === "workspace") initWorkspace();
   if (page === "history") initHistory();
-  window.WechatVideoDL = { safeFetch, applyTheme };
+  window.WechatVideoDL = { safeFetch, applyTheme, openInWeChat };
 })();
