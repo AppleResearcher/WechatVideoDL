@@ -50,7 +50,7 @@ class JobRunnerTests(unittest.TestCase):
         p.write_bytes(b"video")
         return p
 
-    def _run_job(self, analyzer, downloader=None, sleeper=None):
+    def _run_job(self, analyzer, downloader=None, sleeper=None, thumbnailer=None):
         return run_parse_job(
             self.job_id,
             "https://weixin.qq.com/sph/demo",
@@ -64,6 +64,7 @@ class JobRunnerTests(unittest.TestCase):
             downloader=downloader or self.downloader,
             max_attempts=3,
             sleeper=sleeper or (lambda _: None),
+            thumbnailer=thumbnailer,
         )
 
     def test_retryable_success_on_second_attempt(self):
@@ -184,6 +185,25 @@ class JobRunnerTests(unittest.TestCase):
         self.assertTrue(is_retryable_error(FakeError("DOWNLOAD_TIMEOUT", status=504)))
         self.assertFalse(is_retryable_error(FakeError("INVALID_URL", status=400)))
         self.assertFalse(is_retryable_error(FakeError("YUANBAO_LOGIN_REQUIRED", status=401)))
+
+    def test_thumbnail_success_is_persisted_with_shared_stem(self):
+        def thumbnailer(download_dir, target_filename, cover_url, video_path):
+            self.assertEqual(target_filename, "演示视频__000101.jpg")
+            self.assertEqual(cover_url, "https://img.example.com/cover.jpg")
+            self.assertEqual(video_path.name, "演示视频__000101.mp4")
+            path = download_dir / target_filename
+            path.write_bytes(b"jpg")
+            return path
+        row = self._run_job(lambda *_: self.success_analysis(), thumbnailer=thumbnailer)
+        self.assertEqual(row["status"], "completed")
+        self.assertEqual(row["thumbnail_filename"], "演示视频__000101.jpg")
+
+    def test_thumbnail_exception_does_not_fail_completed_job(self):
+        def thumbnailer(*args, **kwargs):
+            raise RuntimeError("thumbnail failed")
+        row = self._run_job(lambda *_: self.success_analysis(), thumbnailer=thumbnailer)
+        self.assertEqual(row["status"], "completed")
+        self.assertIsNone(row["thumbnail_filename"])
 
 
 if __name__ == "__main__":

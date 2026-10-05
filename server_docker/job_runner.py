@@ -73,7 +73,15 @@ def run_parse_job(
     downloader: Callable[[str, str, str], Path],
     max_attempts: int = 3,
     sleeper: Callable[[float], None] = time.sleep,
+    thumbnailer: Callable[[Path, str, str | None, Path | None], Path | None] | None = None,
 ) -> dict[str, Any]:
+    if thumbnailer is None:
+        try:
+            from .thumbnail_service import create_thumbnail as thumbnailer_impl
+        except ImportError:
+            from thumbnail_service import create_thumbnail as thumbnailer_impl
+        thumbnailer = thumbnailer_impl
+
     started = time.monotonic()
     retry_errors: list[dict[str, Any]] = []
     max_attempts = min(3, max(1, int(max_attempts)))
@@ -115,6 +123,13 @@ def run_parse_job(
                 provisional.append(artifact_filename(video_title or None, job_id, "mp4"))
                 video_path = downloader(stem, direct_url, preview_url)
                 provisional.append(video_path.name)
+            thumbnail_path = None
+            if cover_url or video_path is not None:
+                target_thumbnail = artifact_filename(video_title or None, job_id, "jpg")
+                try:
+                    thumbnail_path = thumbnailer(download_dir, target_thumbnail, cover_url or None, video_path)
+                except Exception:
+                    thumbnail_path = None
             elapsed_ms = int((time.monotonic() - started) * 1000)
             row = store.update_job(
                 job_id,
@@ -128,6 +143,7 @@ def run_parse_job(
                 text_bytes=text_path.stat().st_size,
                 video_filename=video_path.name if video_path else None,
                 video_bytes=video_path.stat().st_size if video_path else None,
+                thumbnail_filename=thumbnail_path.name if thumbnail_path else None,
                 elapsed_ms=elapsed_ms,
             )
             assert row is not None
