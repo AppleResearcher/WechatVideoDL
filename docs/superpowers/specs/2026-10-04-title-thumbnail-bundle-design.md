@@ -1,7 +1,7 @@
 # WechatVideoDL 标题化历史、缩略图与打包下载设计
 
 日期：2026-10-04
-状态：待用户书面确认后进入实施计划
+状态：用户已确认，进入实施计划（正式主仓库：topgptus/WechatVideoDL）
 
 ## 1. 背景
 
@@ -419,12 +419,13 @@ wxv_000007.mp4
 - 文档说明 ZIP 内容与标题化文件命名；
 - 文档说明“微信打开”是复制链接 + 唤起客户端的兼容实现，不承诺直接深链具体视频。
 
-验证全部通过后，同步推送：
+验证全部通过后，正式发布到主仓库：
 
 ```text
-samni728/WechatVideoDL
-topgptus/WechatVideoDL
+https://github.com/topgptus/WechatVideoDL
 ```
+
+`samni728/WechatVideoDL` 不再作为默认发布目标；仅在用户后续明确要求时再同步为镜像/备份。
 
 ## 17. 非目标
 
