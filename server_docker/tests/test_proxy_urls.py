@@ -66,6 +66,33 @@ class ProxyUrlTests(unittest.TestCase):
         self.assertEqual(links["download_path"], "/files/wxv_000001.mp4")
         self.assertEqual(links["download_url"], "https://downloads.example.com/tools/wx/files/wxv_000001.mp4")
 
+    def test_thumbnail_and_bundle_links_preserve_trusted_prefix(self):
+        appmod.PUBLIC_BASE_URL = ""
+        appmod.TRUST_PROXY_HEADERS = True
+        headers = {
+            "X-Forwarded-Proto": "https",
+            "X-Forwarded-Host": "video.example.com",
+            "X-Forwarded-Prefix": "/wechat",
+        }
+        job = {
+            "id": "wxv_000321", "input_url": "https://weixin.qq.com/sph/demo",
+            "video_title": "标题", "status": "completed", "output_format": "md",
+            "thumbnail_filename": "标题__000321.jpg", "retry_errors": [],
+        }
+        with appmod.app.test_request_context("/", base_url="http://127.0.0.1:8080", headers=headers):
+            body = appmod.serialize_job(job)
+        self.assertEqual(body["thumbnail"]["download_path"], "/wechat/files/%E6%A0%87%E9%A2%98__000321.jpg")
+        self.assertEqual(body["thumbnail"]["download_url"], "https://video.example.com/wechat/files/%E6%A0%87%E9%A2%98__000321.jpg")
+        self.assertEqual(body["bundle"]["download_path"], "/wechat/api/history/wxv_000321/bundle")
+        self.assertEqual(body["bundle"]["download_url"], "https://video.example.com/wechat/api/history/wxv_000321/bundle")
+
+    def test_bundle_absolute_url_uses_public_base_url_path(self):
+        appmod.PUBLIC_BASE_URL = "https://downloads.example.com/tools/wx"
+        appmod.TRUST_PROXY_HEADERS = False
+        with appmod.app.test_request_context("/", base_url="http://127.0.0.1:8080"):
+            links = appmod.build_route_links("/api/history/wxv_000001/bundle")
+        self.assertEqual(links["download_url"], "https://downloads.example.com/tools/wx/api/history/wxv_000001/bundle")
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -14,16 +14,18 @@ from typing import Any
 from urllib.parse import quote, urlparse, parse_qsl, urlencode, urlunparse
 
 import requests
-from flask import Flask, Response, jsonify, redirect, render_template, request, send_from_directory, session, url_for
+from flask import Flask, Response, jsonify, redirect, render_template, request, send_file, send_from_directory, session, url_for
 from werkzeug.exceptions import BadRequest
 from werkzeug.middleware.proxy_fix import ProxyFix
 
 try:
+    from .bundle_service import ensure_bundle
     from .history_store import HistoryStore
     from .job_files import safe_owned_path
     from .job_runner import run_parse_job
     from .presets import PRESETS, get_preset
 except ImportError:  # Docker runs modules from /app.
+    from bundle_service import ensure_bundle
     from history_store import HistoryStore
     from job_files import safe_owned_path
     from job_runner import run_parse_job
@@ -348,6 +350,16 @@ def build_file_links(name: str) -> dict[str, str]:
     }
 
 
+def build_route_links(path: str) -> dict[str, str]:
+    clean = "/" + str(path or "").lstrip("/")
+    prefix = _trusted_prefix() if not PUBLIC_BASE_URL else ""
+    download_path = f"{prefix}{clean}" if prefix else clean
+    return {
+        "download_path": download_path,
+        "download_url": f"{external_base()}{clean}",
+    }
+
+
 def make_file_url(name: str) -> str:
     return build_file_links(name)["download_url"]
 
@@ -360,7 +372,7 @@ def get_history_store() -> HistoryStore:
 
 
 def serialize_job(job: dict[str, Any]) -> dict[str, Any]:
-    video_title = str(job.get("video_title") or "").strip() or "微信视频号"
+    video_title = str(job.get("video_title") or "").strip() or str(job.get("id") or "")
     result = {
         "id": job["id"],
         "title": video_title,
@@ -417,6 +429,16 @@ def serialize_job(job: dict[str, Any]) -> dict[str, Any]:
             "download_url": None,
             "media": None,
         }
+    thumbnail_filename = job.get("thumbnail_filename")
+    if thumbnail_filename:
+        result["thumbnail"] = {"filename": thumbnail_filename, **build_file_links(thumbnail_filename)}
+    else:
+        result["thumbnail"] = {"filename": None, "download_path": None, "download_url": None}
+    bundle_links = build_route_links(f"/api/history/{job['id']}/bundle")
+    result["bundle"] = {
+        "filename": job.get("bundle_filename"),
+        **bundle_links,
+    }
     return result
 
 
@@ -548,6 +570,27 @@ def api_history_detail(job_id: str):
     return jsonify({"ok": True, "job": serialize_job(job)})
 
 
+@app.route("/api/history/<job_id>/bundle", methods=["GET"])
+@api_or_session_required
+def api_history_bundle(job_id: str):
+    if not _valid_job_id(job_id):
+        return jsonify({"ok": False, "error": {"code": "INVALID_JOB_ID", "message": "任务 ID 格式不正确"}}), 400
+    store = get_history_store()
+    job = store.get_job(job_id)
+    if job is None:
+        return jsonify({"ok": False, "error": {"code": "NOT_FOUND", "message": "历史记录不存在"}}), 404
+    if job.get("status") != "completed":
+        return jsonify({"ok": False, "error": {"code": "BUNDLE_NOT_READY", "message": "任务尚未完成"}}), 409
+    try:
+        bundle = ensure_bundle(DOWNLOAD_DIR, job)
+    except FileNotFoundError:
+        return jsonify({"ok": False, "error": {"code": "BUNDLE_UNAVAILABLE", "message": "没有可打包的附件"}}), 404
+    except Exception as exc:
+        return jsonify({"ok": False, "error": {"code": "BUNDLE_FAILED", "message": "打包下载生成失败", "detail": str(exc)}}), 500
+    store.update_job(job_id, bundle_filename=bundle.name)
+    return send_file(bundle, as_attachment=True, download_name=bundle.name)
+
+
 @app.route("/api/history/<job_id>", methods=["DELETE"])
 @api_or_session_required
 def api_history_delete(job_id: str):
@@ -558,7 +601,7 @@ def api_history_delete(job_id: str):
     if job is None:
         return jsonify({"ok": False, "error": {"code": "NOT_FOUND", "message": "历史记录不存在"}}), 404
     deleted_files: list[str] = []
-    for key in ("text_filename", "video_filename"):
+    for key in ("text_filename", "video_filename", "thumbnail_filename", "bundle_filename"):
         path = safe_owned_path(DOWNLOAD_DIR, job.get(key))
         if path and path.exists():
             try:

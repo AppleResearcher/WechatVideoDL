@@ -104,28 +104,29 @@ def run_parse_job(
             direct_url = str(result.get("directUrl") or "").strip()
             card = result.get("card") if isinstance(result.get("card"), dict) else {}
             video_title = str(card.get("title") or "").strip()
+            resolved_title = video_title or "微信视频号"
             cover_url = str(card.get("coverUrl") or "").strip()
             store.update_job(
                 job_id,
                 yuanbao_content=content,
                 preview_url=preview_url,
                 source_direct_url=direct_url,
-                video_title=video_title or None,
+                video_title=resolved_title,
                 cover_url=cover_url or None,
             )
             job = store.get_job(job_id)
             assert job is not None
-            stem = artifact_stem(video_title or None, job_id)
+            stem = artifact_stem(resolved_title, job_id)
             text_path = write_analysis_file(download_dir, job, output_format)
             provisional.append(text_path.name)
             video_path = None
             if download_requested:
-                provisional.append(artifact_filename(video_title or None, job_id, "mp4"))
+                provisional.append(artifact_filename(resolved_title, job_id, "mp4"))
                 video_path = downloader(stem, direct_url, preview_url)
                 provisional.append(video_path.name)
             thumbnail_path = None
             if cover_url or video_path is not None:
-                target_thumbnail = artifact_filename(video_title or None, job_id, "jpg")
+                target_thumbnail = artifact_filename(resolved_title, job_id, "jpg")
                 try:
                     thumbnail_path = thumbnailer(download_dir, target_thumbnail, cover_url or None, video_path)
                 except Exception:
