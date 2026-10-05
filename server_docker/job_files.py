@@ -4,15 +4,32 @@ import re
 from pathlib import Path
 from typing import Any
 
+try:
+    from .artifact_names import artifact_filename
+except ImportError:  # Docker executes app modules from /app, not as a package.
+    from artifact_names import artifact_filename
 
-OWNED_FILE_RE = re.compile(r"^wxv_\d{6}\.(?:txt|md|mp4)$")
+DEFAULT_ALLOWED_EXTS = {"txt", "md", "mp4", "jpg", "zip"}
 
 
-def safe_owned_path(download_dir: Path, filename: str | None) -> Path | None:
-    if not filename or not OWNED_FILE_RE.fullmatch(filename):
+def safe_owned_path(
+    download_dir: Path,
+    filename: str | None,
+    allowed_exts: set[str] | None = None,
+) -> Path | None:
+    if not filename:
+        return None
+    name = str(filename)
+    if Path(name).name != name or name in {".", ".."}:
+        return None
+    if "/" in name or "\\" in name or "\x00" in name:
+        return None
+    ext = Path(name).suffix.lower().lstrip(".")
+    allowed = DEFAULT_ALLOWED_EXTS if allowed_exts is None else {x.lower().lstrip(".") for x in allowed_exts}
+    if ext not in allowed:
         return None
     root = Path(download_dir).resolve()
-    candidate = (root / filename).resolve()
+    candidate = (root / name).resolve()
     try:
         candidate.relative_to(root)
     except ValueError:
@@ -27,9 +44,11 @@ def write_analysis_file(download_dir: Path, job: dict[str, Any], output_format: 
     if not re.fullmatch(r"wxv_\d{6}", job_id):
         raise ValueError("invalid job id")
 
+    video_title = str(job.get("video_title") or "").strip()
+    display_title = video_title or "微信视频号"
     root = Path(download_dir)
     root.mkdir(parents=True, exist_ok=True)
-    path = root / f"{job_id}.{output_format}"
+    path = root / artifact_filename(video_title or None, job_id, output_format)
     input_url = str(job.get("input_url") or "")
     prompt = str(job.get("prompt") or "").strip()
     content = str(job.get("yuanbao_content") or "").strip()
@@ -37,7 +56,7 @@ def write_analysis_file(download_dir: Path, job: dict[str, Any], output_format: 
     preset_name = str(job.get("preset_name") or "").strip()
 
     if output_format == "txt":
-        parts = [f"ID: {job_id}", f"INPUT_URL: {input_url}"]
+        parts = [f"TITLE: {display_title}", f"ID: {job_id}", f"INPUT_URL: {input_url}"]
         if created_at:
             parts.append(f"CREATED_AT: {created_at}")
         if preset_name:
@@ -48,9 +67,9 @@ def write_analysis_file(download_dir: Path, job: dict[str, Any], output_format: 
         text = "\n".join(parts)
     else:
         lines = [
-            "# WechatVideoDL Analysis",
+            f"# {display_title}",
             "",
-            f"- ID: `{job_id}`",
+            f"- Task ID: `{job_id}`",
             f"- Source: {input_url}",
         ]
         if created_at:

@@ -80,10 +80,12 @@ class ParseApiTests(unittest.TestCase):
         self.assertEqual(body["attempts_used"], 1)
         self.assertEqual(body["max_attempts"], 3)
         self.assertEqual(body["retry_errors"], [])
-        self.assertTrue(body["text"]["filename"].endswith(".md"))
-        self.assertRegex(body["text"]["download_path"], r"^/files/wxv_\d{6}\.md$")
+        self.assertEqual(body["title"], "Demo")
+        self.assertRegex(body["id"], r"^wxv_\d{6}$")
+        self.assertRegex(body["text"]["filename"], r"^Demo__\d{6}\.md$")
+        self.assertRegex(body["text"]["download_path"], r"^/files/Demo__\d{6}\.md$")
         self.assertTrue(body["text"]["download_url"].startswith("http://localhost/files/"))
-        self.assertRegex(body["video"]["download_path"], r"^/files/wxv_\d{6}\.mp4$")
+        self.assertRegex(body["video"]["download_path"], r"^/files/Demo__\d{6}\.mp4$")
 
     def test_invalid_output_format_returns_json_400_without_analyzer(self):
         calls = []
@@ -132,6 +134,19 @@ class ParseApiTests(unittest.TestCase):
         self.assertEqual(body["job"]["attempts_used"], 3)
         self.assertEqual(len(body["job"]["retry_errors"]), 3)
         self.assertEqual(body["error"]["code"], "BROWSERLESS_UNREACHABLE")
+
+    def test_empty_card_title_uses_human_fallback_filename(self):
+        appmod.analyze_with_yuanbao = lambda *_: {
+            "content": "analysis body",
+            "previewUrl": "https://channels.weixin.qq.com/finder-preview/demo",
+            "directUrl": "https://finder.video.qq.com/demo.mp4",
+            "card": {"title": "", "coverUrl": ""},
+        }
+        r = self.post({"url": "https://weixin.qq.com/sph/demo", "download": False, "output_format": "md"})
+        self.assertEqual(r.status_code, 200)
+        body = r.get_json()
+        self.assertEqual(body["title"], "微信视频号")
+        self.assertRegex(body["text"]["filename"], r"^微信视频号__\d{6}\.md$")
 
 
 if __name__ == "__main__":

@@ -26,6 +26,10 @@ JOB_COLUMNS = {
     "yuanbao_content",
     "preview_url",
     "source_direct_url",
+    "video_title",
+    "cover_url",
+    "thumbnail_filename",
+    "bundle_filename",
     "text_filename",
     "video_filename",
     "text_bytes",
@@ -73,6 +77,10 @@ class HistoryStore:
                     yuanbao_content TEXT,
                     preview_url TEXT,
                     source_direct_url TEXT,
+                    video_title TEXT,
+                    cover_url TEXT,
+                    thumbnail_filename TEXT,
+                    bundle_filename TEXT,
                     text_filename TEXT,
                     video_filename TEXT,
                     text_bytes INTEGER,
@@ -81,6 +89,10 @@ class HistoryStore:
                 )
                 """
             )
+            existing = {row[1] for row in conn.execute("PRAGMA table_info(jobs)").fetchall()}
+            for column in ("video_title", "cover_url", "thumbnail_filename", "bundle_filename"):
+                if column not in existing:
+                    conn.execute(f"ALTER TABLE jobs ADD COLUMN {column} TEXT")
             conn.execute("CREATE INDEX IF NOT EXISTS idx_jobs_created_at ON jobs(created_at DESC)")
 
     def _reconcile_running_jobs(self) -> None:

@@ -41,11 +41,12 @@ class JobRunnerTests(unittest.TestCase):
             "content": "result",
             "previewUrl": "https://channels.weixin.qq.com/finder-preview/demo",
             "directUrl": "https://finder.video.qq.com/demo.mp4",
+            "card": {"title": "演示视频", "coverUrl": "https://img.example.com/cover.jpg"},
         }
 
-    def downloader(self, job_id, direct_url, referer):
+    def downloader(self, output_stem, direct_url, referer):
         self.downloads.mkdir(parents=True, exist_ok=True)
-        p = self.downloads / f"{job_id}.mp4"
+        p = self.downloads / f"{output_stem}.mp4"
         p.write_bytes(b"video")
         return p
 
@@ -79,8 +80,10 @@ class JobRunnerTests(unittest.TestCase):
         self.assertEqual(row["attempts_used"], 2)
         self.assertEqual(len(row["retry_errors"]), 1)
         self.assertEqual(row["retry_errors"][0]["code"], "BROWSERLESS_UNREACHABLE")
-        self.assertEqual(row["text_filename"], f"{self.job_id}.md")
-        self.assertEqual(row["video_filename"], f"{self.job_id}.mp4")
+        self.assertEqual(row["video_title"], "演示视频")
+        self.assertEqual(row["cover_url"], "https://img.example.com/cover.jpg")
+        self.assertEqual(row["text_filename"], "演示视频__000101.md")
+        self.assertEqual(row["video_filename"], "演示视频__000101.mp4")
 
     def test_retryable_success_on_third_attempt_and_backoff(self):
         calls, sleeps = [], []
@@ -120,9 +123,23 @@ class JobRunnerTests(unittest.TestCase):
 
     def test_partial_artifacts_are_removed_before_retry(self):
         downloads = []
-        def downloader(job_id, direct_url, referer):
-            self.downloads.mkdir(parents=True, exist_ok=True)
-            partial = self.downloads / f"{job_id}.mp4"
+        analysis_calls = []
+        neighbor = self.downloads / "第一个标题__000202.mp4"
+        self.downloads.mkdir(parents=True, exist_ok=True)
+        neighbor.write_bytes(b"neighbor")
+
+        def analyzer(url, prompt):
+            analysis_calls.append(1)
+            title = "第一个标题" if len(analysis_calls) == 1 else "第二个标题"
+            return {
+                "content": "result",
+                "previewUrl": "https://channels.weixin.qq.com/finder-preview/demo",
+                "directUrl": "https://finder.video.qq.com/demo.mp4",
+                "card": {"title": title, "coverUrl": ""},
+            }
+
+        def downloader(output_stem, direct_url, referer):
+            partial = self.downloads / f"{output_stem}.mp4"
             partial.write_bytes(b"partial")
             downloads.append(partial)
             if len(downloads) == 1:
@@ -130,10 +147,13 @@ class JobRunnerTests(unittest.TestCase):
             partial.write_bytes(b"final")
             return partial
 
-        row = self._run_job(lambda *_: self.success_analysis(), downloader=downloader)
+        row = self._run_job(analyzer, downloader=downloader)
         self.assertEqual(row["status"], "completed")
-        self.assertEqual((self.downloads / f"{self.job_id}.mp4").read_bytes(), b"final")
-        self.assertTrue((self.downloads / f"{self.job_id}.md").exists())
+        self.assertFalse((self.downloads / "第一个标题__000101.md").exists())
+        self.assertFalse((self.downloads / "第一个标题__000101.mp4").exists())
+        self.assertEqual((self.downloads / "第二个标题__000101.mp4").read_bytes(), b"final")
+        self.assertTrue((self.downloads / "第二个标题__000101.md").exists())
+        self.assertTrue(neighbor.exists())
 
     def test_retry_attempts_are_capped_at_three(self):
         calls = []

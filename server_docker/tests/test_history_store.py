@@ -99,6 +99,38 @@ class HistoryStoreTests(unittest.TestCase):
         self.assertEqual(deleted["id"], "wxv_000005")
         self.assertIsNone(self.store.get_job("wxv_000005"))
 
+    def test_legacy_schema_is_migrated_without_losing_rows(self):
+        import sqlite3
+        legacy = Path(self.tmp.name) / "legacy.db"
+        conn = sqlite3.connect(legacy)
+        conn.executescript("""
+            CREATE TABLE jobs (
+                id TEXT PRIMARY KEY, created_at TEXT NOT NULL, updated_at TEXT NOT NULL,
+                input_url TEXT NOT NULL, prompt TEXT, preset_id TEXT, preset_name TEXT,
+                output_format TEXT NOT NULL, download_requested INTEGER NOT NULL DEFAULT 1,
+                status TEXT NOT NULL DEFAULT 'completed', attempts_used INTEGER NOT NULL DEFAULT 1,
+                max_attempts INTEGER NOT NULL DEFAULT 3, retry_errors_json TEXT NOT NULL DEFAULT '[]',
+                error_code TEXT, error_message TEXT, yuanbao_content TEXT, preview_url TEXT,
+                source_direct_url TEXT, text_filename TEXT, video_filename TEXT,
+                text_bytes INTEGER, video_bytes INTEGER, elapsed_ms INTEGER
+            );
+            INSERT INTO jobs (id, created_at, updated_at, input_url, output_format, status)
+            VALUES ('wxv_000099', 'a', 'b', 'https://weixin.qq.com/sph/demo', 'md', 'completed');
+        """)
+        conn.commit(); conn.close()
+        reopened = HistoryStore(legacy)
+        row = reopened.get_job("wxv_000099")
+        self.assertIsNotNone(row)
+        self.assertEqual(row["input_url"], "https://weixin.qq.com/sph/demo")
+        self.assertIsNone(row["video_title"])
+        self.assertIsNone(row["cover_url"])
+        self.assertIsNone(row["thumbnail_filename"])
+        self.assertIsNone(row["bundle_filename"])
+        conn = sqlite3.connect(legacy)
+        cols = {r[1] for r in conn.execute("PRAGMA table_info(jobs)")}
+        conn.close()
+        self.assertTrue({"video_title", "cover_url", "thumbnail_filename", "bundle_filename"}.issubset(cols))
+
 
 if __name__ == "__main__":
     unittest.main()

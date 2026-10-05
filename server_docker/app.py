@@ -256,9 +256,9 @@ def save_text(job_id: str, input_url: str, prompt: str | None, content: str) -> 
     return path
 
 
-def download_video(job_id: str, direct_url: str, referer: str) -> Path:
+def download_video(output_stem: str, direct_url: str, referer: str) -> Path:
     DOWNLOAD_DIR.mkdir(parents=True, exist_ok=True)
-    template = str(DOWNLOAD_DIR / f"{job_id}.%(ext)s")
+    template = str(DOWNLOAD_DIR / f"{output_stem}.%(ext)s")
     cmd = [
         "yt-dlp",
         "--no-playlist",
@@ -281,7 +281,7 @@ def download_video(job_id: str, direct_url: str, referer: str) -> Path:
     lines = [x.strip() for x in p.stdout.splitlines() if x.strip()]
     path = Path(lines[-1]) if lines else None
     if not path or not path.exists() or path.stat().st_size <= 0:
-        candidates = sorted(DOWNLOAD_DIR.glob(f"{job_id}.*"), key=lambda x: x.stat().st_mtime, reverse=True)
+        candidates = sorted(DOWNLOAD_DIR.glob(f"{output_stem}.*"), key=lambda x: x.stat().st_mtime, reverse=True)
         path = candidates[0] if candidates else None
     if not path or not path.exists() or path.stat().st_size <= 0:
         raise AppError("DOWNLOAD_VERIFY_FAILED", "下载命令结束，但未找到有效视频文件", 502)
@@ -360,8 +360,11 @@ def get_history_store() -> HistoryStore:
 
 
 def serialize_job(job: dict[str, Any]) -> dict[str, Any]:
+    video_title = str(job.get("video_title") or "").strip() or "微信视频号"
     result = {
         "id": job["id"],
+        "title": video_title,
+        "source_url": job.get("input_url"),
         "created_at": job.get("created_at"),
         "updated_at": job.get("updated_at"),
         "input_url": job.get("input_url"),

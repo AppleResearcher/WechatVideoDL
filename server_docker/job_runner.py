@@ -2,40 +2,28 @@ from __future__ import annotations
 
 import time
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any, Callable, Iterable
 
 try:
+    from .artifact_names import artifact_filename, artifact_stem
     from .history_store import HistoryStore
     from .job_files import safe_owned_path, write_analysis_file
 except ImportError:  # Docker executes app modules from /app, not as a package.
+    from artifact_names import artifact_filename, artifact_stem
     from history_store import HistoryStore
     from job_files import safe_owned_path, write_analysis_file
 
 
 RETRYABLE_CODES = {
-    "BROWSERLESS_UNREACHABLE",
-    "BROWSERLESS_ERROR",
-    "BROWSERLESS_BAD_JSON",
-    "BROWSERLESS_SCRIPT_ERROR",
-    "BROWSERLESS_BAD_RESULT",
-    "YUANBAO_EMPTY_RESPONSE",
-    "YUANBAO_PREVIEW_URL_MISSING",
-    "VIDEO_URL_MISSING",
-    "WECHAT_VIDEO_URL_MISSING",
-    "DOWNLOAD_TIMEOUT",
-    "DOWNLOAD_FAILED",
-    "DOWNLOAD_VERIFY_FAILED",
+    "BROWSERLESS_UNREACHABLE", "BROWSERLESS_ERROR", "BROWSERLESS_BAD_JSON",
+    "BROWSERLESS_SCRIPT_ERROR", "BROWSERLESS_BAD_RESULT", "YUANBAO_EMPTY_RESPONSE",
+    "YUANBAO_PREVIEW_URL_MISSING", "VIDEO_URL_MISSING", "WECHAT_VIDEO_URL_MISSING",
+    "DOWNLOAD_TIMEOUT", "DOWNLOAD_FAILED", "DOWNLOAD_VERIFY_FAILED",
 }
 NON_RETRYABLE_CODES = {
-    "INVALID_URL",
-    "INVALID_OUTPUT_FORMAT",
-    "BAD_REQUEST",
-    "UNAUTHORIZED",
-    "YUANBAO_LOGIN_REQUIRED",
-    "COOKIE_FILE_MISSING",
-    "COOKIE_EMPTY",
-    "SESSION_STATE_INVALID",
-    "FUNCTION_FILE_MISSING",
+    "INVALID_URL", "INVALID_OUTPUT_FORMAT", "BAD_REQUEST", "UNAUTHORIZED",
+    "YUANBAO_LOGIN_REQUIRED", "COOKIE_FILE_MISSING", "COOKIE_EMPTY",
+    "SESSION_STATE_INVALID", "FUNCTION_FILE_MISSING",
 }
 
 
@@ -61,9 +49,9 @@ def is_retryable_error(exc: BaseException) -> bool:
     return isinstance(status, int) and status >= 500
 
 
-def cleanup_job_artifacts(download_dir: Path, job_id: str) -> None:
-    for ext in ("txt", "md", "mp4"):
-        path = safe_owned_path(download_dir, f"{job_id}.{ext}")
+def cleanup_artifacts(download_dir: Path, filenames: Iterable[str | None]) -> None:
+    for filename in dict.fromkeys(filenames):
+        path = safe_owned_path(download_dir, filename)
         if path and path.exists():
             try:
                 path.unlink()
@@ -100,21 +88,33 @@ def run_parse_job(
             error_code=None,
             error_message=None,
         )
+        provisional: list[str | None] = []
         try:
             result = analyzer(input_url, prompt)
             content = str(result.get("content") or "").strip()
             preview_url = str(result.get("previewUrl") or "").strip()
             direct_url = str(result.get("directUrl") or "").strip()
+            card = result.get("card") if isinstance(result.get("card"), dict) else {}
+            video_title = str(card.get("title") or "").strip()
+            cover_url = str(card.get("coverUrl") or "").strip()
             store.update_job(
                 job_id,
                 yuanbao_content=content,
                 preview_url=preview_url,
                 source_direct_url=direct_url,
+                video_title=video_title or None,
+                cover_url=cover_url or None,
             )
             job = store.get_job(job_id)
             assert job is not None
+            stem = artifact_stem(video_title or None, job_id)
             text_path = write_analysis_file(download_dir, job, output_format)
-            video_path = downloader(job_id, direct_url, preview_url) if download_requested else None
+            provisional.append(text_path.name)
+            video_path = None
+            if download_requested:
+                provisional.append(artifact_filename(video_title or None, job_id, "mp4"))
+                video_path = downloader(stem, direct_url, preview_url)
+                provisional.append(video_path.name)
             elapsed_ms = int((time.monotonic() - started) * 1000)
             row = store.update_job(
                 job_id,
@@ -137,7 +137,17 @@ def run_parse_job(
                 raise
             summary = error_summary(exc, attempt)
             retry_errors.append(summary)
-            cleanup_job_artifacts(download_dir, job_id)
+            current = store.get_job(job_id) or {}
+            cleanup_artifacts(
+                download_dir,
+                [
+                    *provisional,
+                    current.get("text_filename"),
+                    current.get("video_filename"),
+                    current.get("thumbnail_filename"),
+                    current.get("bundle_filename"),
+                ],
+            )
             retryable = is_retryable_error(exc)
             final = (not retryable) or attempt >= max_attempts
             row = store.update_job(
@@ -152,6 +162,8 @@ def run_parse_job(
                 text_bytes=None,
                 video_filename=None,
                 video_bytes=None,
+                thumbnail_filename=None,
+                bundle_filename=None,
                 elapsed_ms=int((time.monotonic() - started) * 1000) if final else None,
             )
             if final:
