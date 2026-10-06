@@ -23,7 +23,10 @@ Browserless Headless Chromium
 - Markdown / TXT 输出选择；
 - 5 个可编辑 Prompt 预设；
 - Light / Dark / System 三种主题；
-- 历史任务的 MD/TXT/MP4 下载与安全删除；
+- 历史任务按真实视频标题展示，并显示视频缩略图；
+- `视频标题__000012` 统一命名 MD/TXT、MP4、JPG 与 ZIP；
+- “下载全部”ZIP + MD/TXT/MP4 单独下载与安全删除；
+- 原视频号链接直接打开 + “微信打开”复制并尝试唤起桌面微信；
 - 反向代理真实域名、HTTPS 与 path prefix 支持；
 - 非 JSON / HTML 502 代理错误的友好提示。
 
@@ -41,7 +44,7 @@ Browserless Headless Chromium
 ## 1. 最短部署流程
 
 ```bash
-git clone https://github.com/samni728/WechatVideoDL.git
+git clone https://github.com/topgptus/WechatVideoDL.git
 cd WechatVideoDL/server_docker
 
 ./scripts/install-docker-if-missing.sh
@@ -284,12 +287,15 @@ data/
 ├── history.db
 ├── sequence.txt
 └── downloads/
-    ├── wxv_000001.md
-    ├── wxv_000001.mp4
+    ├── 视频标题__000001.md
+    ├── 视频标题__000001.mp4
+    ├── 视频标题__000001.jpg
+    ├── 视频标题__000001.zip
+    ├── wxv_000007.md        # 旧版本文件继续兼容
     └── ...
 ```
 
-`history.db` 是 SQLite 单账号历史库。
+`history.db` 是 SQLite 单账号历史库。升级时会自动幂等新增 `video_title`、`cover_url`、`thumbnail_filename`、`bundle_filename`，旧数据不会被重建或批量改名。
 
 容器重建不会删除 bind-mounted `data/`。
 
@@ -312,10 +318,15 @@ WebUI 支持：
 - 可读错误，不再把 HTML 错误页当 JSON
 - 历史记录
 - 历史详情
-- MP4 / TXT / MD 再下载
-- 删除历史及其关联文件
+- 视频标题 + 16:9 缩略图
+- 按标题 / ID / 链接 / Prompt 搜索
+- `下载全部` ZIP，以及 MP4 / TXT / MD 单独下载
+- 点击原视频号链接，或“微信打开”复制链接并尝试唤起桌面微信
+- 删除历史及其 MD/TXT/MP4/JPG/ZIP 关联文件
 
 WebUI 默认 `md`；API 没传 `output_format` 时为兼容旧客户端默认 `txt`。
+
+缩略图采用“**封面优先，首帧 fallback**”：先获取 Browserless 返回的 `coverUrl`，失败且存在 MP4 时使用 ffmpeg 抽取首帧。缩略图失败本身不会让主解析任务失败。
 
 ---
 
@@ -342,10 +353,16 @@ curl -u 'USERNAME:PASSWORD' \
 attempts_used
 max_attempts
 retry_errors
+title
+source_url
 text.download_path
 text.download_url
 video.download_path
 video.download_url
+thumbnail.download_path
+thumbnail.download_url
+bundle.download_path
+bundle.download_url
 ```
 
 ### Presets
@@ -360,6 +377,16 @@ curl -u 'USERNAME:PASSWORD' http://SERVER_IP:18770/api/presets
 curl -u 'USERNAME:PASSWORD' http://SERVER_IP:18770/api/history
 curl -u 'USERNAME:PASSWORD' http://SERVER_IP:18770/api/history/wxv_000001
 ```
+
+### 下载全部 ZIP
+
+```bash
+curl -u 'USERNAME:PASSWORD' \
+  -OJ \
+  http://SERVER_IP:18770/api/history/wxv_000001/bundle
+```
+
+ZIP 会使用 `视频标题__000001.zip`，内部文件也统一为同一个标题 stem。首次请求按需生成；组成附件发生变化时会自动重建缓存。
 
 ### Delete
 

@@ -7,7 +7,7 @@
 
 WechatVideoDL 是一个面向 **微信视频号分享链接** 的自托管工具。输入一条 `weixin.qq.com/sph/...` 链接和可选 Prompt，服务会通过 Browserless 的无头 Chromium 调用腾讯元宝，让元宝理解视频内容并返回文本，同时解析视频号真实视频源，并由 `yt-dlp` 保存 MP4。
 
-它提供带账号密码的 WebUI、HTTP API、自动重试、历史记录、TXT/Markdown 输出、提示词预设、文件删除、亮色/暗色主题，以及适合 Nginx / Caddy / Cloudflare 反代的下载链接处理。
+它提供带账号密码的 WebUI、HTTP API、自动重试、历史记录、TXT/Markdown 输出、提示词预设、标题化文件名、视频缩略图、一键 ZIP 下载、文件删除、亮色/暗色主题，以及适合 Nginx / Caddy / Cloudflare 反代的下载链接处理。
 
 > 推荐部署：**Ubuntu / Debian + Docker + Docker Compose**。
 > 没有 Browserless 也没关系，项目可自动启动一份隔离的 Browserless 容器；如果服务器已经有兼容的 Browserless，部署脚本会优先复用，不会擅自重启已有服务。
@@ -20,7 +20,7 @@ WechatVideoDL 是一个面向 **微信视频号分享链接** 的自托管工具
 
 ![WechatVideoDL dark workspace](docs/images/webui-dark.png)
 
-暗色工作台包含视频号 URL、Prompt 预设、可编辑 Prompt、Markdown/TXT 输出选择、MP4 下载开关，以及右侧任务结果区。任务执行期间会显示状态；成功后可直接下载文本和视频，并查看尝试次数与技术详情。
+暗色工作台包含视频号 URL、Prompt 预设、可编辑 Prompt、Markdown/TXT 输出选择、MP4 下载开关，以及右侧任务结果区。解析成功后会以**真实视频标题 + 缩略图**为主要识别信息，可一键下载 ZIP，也可单独下载 MD/TXT 与 MP4，并保留内部任务 ID、尝试次数和技术详情。
 
 ### 工作台 · 明亮模式
 
@@ -32,7 +32,7 @@ WechatVideoDL 是一个面向 **微信视频号分享链接** 的自托管工具
 
 ![WechatVideoDL history](docs/images/webui-history.png)
 
-历史页使用 SQLite 持久化任务。每条记录保留来源 URL、Prompt、预设、输出格式、任务状态、尝试次数和文件信息；可以查看详情、重新下载 MD/TXT/MP4，也可以删除该任务以及它拥有的关联文件。
+历史页使用 SQLite 持久化任务。新任务以视频标题和 16:9 缩略图为主，来源链接可直接在浏览器打开，也可用“微信打开”复制链接并尝试唤起桌面微信；同时支持“下载全部”、单独下载 MD/TXT/MP4、查看详情和安全删除。旧历史没有标题/封面时会自动降级显示，不需要重建数据库。
 
 ### 登录页
 
@@ -51,12 +51,15 @@ WebUI 使用单账号登录；API 同时支持 HTTP Basic Auth。Cookie、Sessio
 | Prompt 预设 | 内置 5 个精选模板，选择后自动填入 textarea，用户仍可继续编辑 |
 | 文本格式 | WebUI 默认 Markdown，可切换 `.md` / `.txt`；API 兼容默认 `.txt` |
 | 历史记录 | SQLite `/data/history.db` 持久化成功/失败任务 |
-| 历史删除 | 删除记录时同步删除该任务拥有的 MD/TXT/MP4；不会接受任意文件路径 |
-| 下载文件名 | 使用 `wxv_000001.md` / `wxv_000001.mp4` 这种短序号 |
+| 历史删除 | 删除记录时同步删除该任务拥有的 MD/TXT/MP4/JPG/ZIP；不会接受任意文件路径 |
+| 下载文件名 | 新任务使用 `视频标题__000001.md` / `.mp4` / `.jpg` / `.zip`，内部仍保留 `wxv_000001` 作为稳定 ID |
 | 主题 | Light / Dark / System 三种主题，浏览器本地记忆偏好 |
 | Logo / UI | 新 Logo、响应式双栏工作台、独立历史页和登录页 |
 | 反向代理 | 支持 Nginx / Caddy / Cloudflare，识别可信 `X-Forwarded-*` 与 path prefix |
 | 下载 URL | API 同时返回相对 `download_path` 与绝对 `download_url`，WebUI 优先使用相对路径 |
+| 视频缩略图 | 优先保存视频号 `coverUrl`；封面不可用时使用 ffmpeg 从 MP4 抽取首帧 |
+| 一键下载 | `下载全部` 服务端生成 ZIP，包含实际存在的 MD/TXT、MP4 与 JPG |
+| 原链接 / 微信 | HTTPS 原链接可直接点击；“微信打开”会复制链接并尝试调用 `weixin://` 唤起桌面微信 |
 | Browserless | 真正无头 Chromium；业务容器直接调用 `/function`，**不需要 Playwright SDK** |
 | 防自动播放 | Chromium 静音、覆盖 `play()`、`no_autoplay`、阻断 media request |
 | 部署保护 | 部署脚本优先复用兼容 Browserless，并避免停止服务器上的其他 Docker 项目 |
@@ -80,12 +83,33 @@ WebUI 使用单账号登录；API 同时支持 HTTP Basic Auth。Cookie、Sessio
 - 自动解析真实 `finder.video.qq.com/...` 视频 URL
 - `yt-dlp` 下载 MP4
 - 文本输出可选 `.txt` 或 `.md`
+- 自动保存视频标题并统一命名 MD/TXT、MP4、JPG 与 ZIP
+- 历史记录显示标题与缩略图，支持标题搜索
+- `下载全部` 一键获取分析文本 + 视频 + 缩略图
+- 原视频号链接可点击，并提供桌面微信唤起入口
 - **最多 3 次自动重试**，失败记录同样进入历史
 - SQLite 持久化历史记录：`/data/history.db`
 - WebUI 单账号登录 + API HTTP Basic Auth
 - Light / Dark / System 三种主题
 - Browserless 无头运行，不弹桌面浏览器
 - 支持反代域名、HTTPS 与子路径部署
+
+### 标题化附件与“下载全部”
+
+Browserless 已经能从视频号卡片获取 `title` 和 `coverUrl`。新任务完成后，用户可见附件统一使用同一个安全化 stem，例如：
+
+```text
+AI Agent：从视频到个人知识库__000012.md
+AI Agent：从视频到个人知识库__000012.mp4
+AI Agent：从视频到个人知识库__000012.jpg
+AI Agent：从视频到个人知识库__000012.zip
+```
+
+`wxv_000012` 仍是数据库主键、重试与安全删除使用的内部 ID，因此同名视频也不会冲突。标题为空时使用 `微信视频号__000012`。
+
+缩略图优先保存 `coverUrl`；若封面缺失/失效而 MP4 已存在，则用 ffmpeg 抽取首帧。缩略图失败不会把主任务从 `completed` 改成失败。
+
+“下载全部”通过 `GET /api/history/<job_id>/bundle` 返回一个 ZIP，按实际存在的附件包含 MD/TXT、MP4 与 JPG。源链接仍可正常在浏览器打开；“微信打开”会复制源链接并尝试唤起桌面微信，作为跨版本兼容方案。
 
 ---
 
@@ -129,9 +153,13 @@ Browserless Headless Chromium
                 yt-dlp                            Yuanbao 文本
                    │                                   │
                    ▼                                   ▼
-            wxv_000001.mp4                    wxv_000001.md / txt
+      视频标题__000001.mp4              视频标题__000001.md / txt
                    │                                   │
-                   └─────────────────┬─────────────────┘
+                   └──────────► 视频标题__000001.jpg ◄─┘
+                                     │
+                                     ▼
+                           视频标题__000001.zip
+                                     │
                                      ▼
                               SQLite history.db
 ```
@@ -145,7 +173,7 @@ Docker 版本 **不需要 Playwright SDK**。业务容器直接调用 Browserles
 一台新的 Ubuntu / Debian VPS 上，流程如下：
 
 ```bash
-git clone https://github.com/samni728/WechatVideoDL.git
+git clone https://github.com/topgptus/WechatVideoDL.git
 cd WechatVideoDL/server_docker
 
 # 检查 Docker；如果机器真的完全没有 Docker，再按脚本提示安装
@@ -207,7 +235,7 @@ WEBUI_PASSWORD=你设置的密码
 - requests
 - yt-dlp
 
-当前流程直接下载视频号 MP4，**不强制安装 ffmpeg / ffprobe**。如果容器中没有 `ffprobe`，API 的可选媒体元数据字段会是 `null`，不影响视频下载。宿主机也不需要单独安装 Python、yt-dlp 或 ffmpeg。
+应用镜像现在会正式安装 **ffmpeg / ffprobe**：`ffmpeg` 用于封面标准化和“封面不可用 → MP4 首帧”缩略图 fallback，`ffprobe` 用于返回可选媒体元数据。宿主机仍不需要单独安装 Python、yt-dlp 或 ffmpeg。
 
 ---
 
@@ -1033,8 +1061,11 @@ server_docker/data/
 ├── history.db
 ├── sequence.txt
 └── downloads/
-    ├── wxv_000001.md
-    ├── wxv_000001.mp4
+    ├── 视频标题__000001.md
+    ├── 视频标题__000001.mp4
+    ├── 视频标题__000001.jpg
+    ├── 视频标题__000001.zip
+    ├── wxv_000007.md        # 升级前旧文件仍兼容
     └── ...
 ```
 
@@ -1052,9 +1083,9 @@ git pull
 ./scripts/deploy.sh
 ```
 
-SQLite schema 会在启动时自动创建/兼容初始化。
+SQLite schema 会在启动时自动创建并幂等迁移。现有 `history.db` 会自动增加 `video_title`、`cover_url`、`thumbnail_filename`、`bundle_filename` 字段，不要求删库重建。
 
-升级前已经存在的旧 MP4/TXT 文件不会被猜测性导入历史数据库；升级后的新任务开始进入 History。
+升级前已经存在的旧 `wxv_*` 文件与历史记录保持原样，不做猜测性重命名；新任务开始使用 `视频标题__序号` 命名。
 
 ---
 
