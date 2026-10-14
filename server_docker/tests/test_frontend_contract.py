@@ -31,6 +31,12 @@ class FrontendContractTests(unittest.TestCase):
         self.assertIn('routePath("api/presets")', js)
         self.assertIn("promptInput.value", js)
 
+    def test_history_missing_cover_placeholder_distinguishes_text_only_tasks(self):
+        js = (ROOT / "static" / "app.js").read_text("utf-8")
+        self.assertIn('job.thumbnail?.download_path', js)
+        self.assertIn('job.download_requested === false ? "MD Only" : "No Cover"', js)
+        self.assertNotIn('placeholder.textContent = "VIDEO"', js)
+
     def test_history_supports_download_detail_and_confirmed_delete(self):
         js = (ROOT / "static" / "app.js").read_text("utf-8")
         self.assertIn('routePath("api/history")', js)
