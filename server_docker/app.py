@@ -46,7 +46,7 @@ WEBUI_USERNAME = os.environ.get("WEBUI_USERNAME", "admin")
 WEBUI_PASSWORD = os.environ.get("WEBUI_PASSWORD", "")
 SECRET_KEY = os.environ.get("SECRET_KEY") or secrets.token_hex(32)
 PUBLIC_BASE_URL = os.environ.get("PUBLIC_BASE_URL", "").rstrip("/")
-BROWSER_TIMEOUT = int(os.environ.get("BROWSER_TIMEOUT", "180"))
+BROWSER_TIMEOUT = int(os.environ.get("BROWSER_TIMEOUT", "300"))
 DOWNLOAD_TIMEOUT = int(os.environ.get("DOWNLOAD_TIMEOUT", "300"))
 TRUST_PROXY_HEADERS = os.environ.get("TRUST_PROXY_HEADERS", "false").strip().lower() in {"1", "true", "yes", "on"}
 PROXY_HOPS = max(1, int(os.environ.get("PROXY_HOPS", "1")))
@@ -180,21 +180,32 @@ def browserless_function(source: str, context: dict[str, Any], timeout: int | No
             timeout=timeout or BROWSER_TIMEOUT,
         )
     except requests.RequestException as exc:
-        raise AppError("BROWSERLESS_UNREACHABLE", f"Browserless 请求失败：{exc}", 503) from exc
+        # requests' exception string may include a URL containing the API token.
+        raise AppError("BROWSERLESS_UNREACHABLE", "无法连接 Browserless，请稍后重试", 503) from exc
 
+    # Browserless v1 wraps script exceptions in HTTP 502, while other
+    # versions may respond HTTP 200 with an "error" field. Whitelist only
+    # error identifiers, never return raw error payloads to the caller.
+    error_codes = {
+        "YUANBAO_CARD_TIMEOUT": ("元宝视频卡片生成超时", 502),
+        "YUANBAO_LOGIN_REQUIRED": ("元宝登录态已失效，需要重新登录", 401),
+        "YUANBAO_EDITOR_EMPTY": ("元宝输入框未能正确填写", 502),
+        "WECHAT_VIDEO_URL_MISSING": ("无法提取视频真实地址", 502),
+    }
     if r.status_code != 200:
-        raise AppError(
-            "BROWSERLESS_ERROR",
-            f"Browserless 返回 HTTP {r.status_code}",
-            502,
-            r.text[-3000:],
-        )
+        for code, (message, status) in error_codes.items():
+            if re.search(r"\b" + code + r"\b", r.text):
+                raise AppError(code, message, status)
+        raise AppError("BROWSERLESS_ERROR", f"Browserless 返回 HTTP {r.status_code}", 502)
     try:
         data = r.json()
     except ValueError as exc:
-        raise AppError("BROWSERLESS_BAD_JSON", "Browserless 返回内容不是 JSON", 502, r.text[-3000:]) from exc
+        raise AppError("BROWSERLESS_BAD_JSON", "Browserless 返回内容不是 JSON", 502) from exc
     if isinstance(data, dict) and data.get("error"):
-        raise AppError("BROWSERLESS_SCRIPT_ERROR", str(data.get("error")), 502, data)
+        for code, (message, status) in error_codes.items():
+            if re.search(r"\b" + code + r"\b", str(data["error"])):
+                raise AppError(code, message, status)
+        raise AppError("BROWSERLESS_SCRIPT_ERROR", "浏览器自动化脚本失败", 502)
     if isinstance(data, dict) and isinstance(data.get("data"), dict) and not data.get("yuanbaoContent"):
         data = data["data"]
     if not isinstance(data, dict):

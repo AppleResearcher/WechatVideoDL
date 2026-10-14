@@ -21,7 +21,7 @@ services:
       BROWSERLESS_FUNCTION_FILE: /app/browserless_function.js
       DATA_DIR: /data
       DOWNLOAD_DIR: /data/downloads
-      BROWSER_TIMEOUT: "180"
+      BROWSER_TIMEOUT: "${BROWSER_TIMEOUT:-300}"
       DOWNLOAD_TIMEOUT: "300"
     volumes:
       - ./data:/data
