@@ -1,5 +1,7 @@
 import base64
 import tempfile
+import threading
+import time
 import unittest
 from pathlib import Path
 
@@ -59,11 +61,24 @@ class ParseApiTests(unittest.TestCase):
     def post(self, payload):
         return self.client.post("/api/parse", json=payload, headers=self.auth())
 
+    def await_job(self, job_id, timeout=4.0):
+        deadline = time.monotonic() + timeout
+        while time.monotonic() < deadline:
+            response = self.client.get(f"/api/history/{job_id}", headers=self.auth())
+            self.assertEqual(response.status_code, 200)
+            job = response.get_json()["job"]
+            if job["status"] in ("completed", "failed"):
+                return job
+            time.sleep(0.02)
+        self.fail(f"Job {job_id} did not finish in {timeout}s")
+
     def test_omitted_output_format_defaults_to_txt(self):
         r = self.post({"url": "https://weixin.qq.com/sph/demo", "download": False})
-        self.assertEqual(r.status_code, 200)
-        body = r.get_json()
-        self.assertTrue(body["ok"])
+        self.assertEqual(r.status_code, 202)
+        self.assertEqual(r.headers["Location"], f"/api/history/{r.get_json()['id']}")
+        self.assertEqual(r.headers["Cache-Control"], "no-store")
+        self.assertTrue(r.get_json()["ok"])
+        body = self.await_job(r.get_json()["id"])
         self.assertTrue(body["text"]["filename"].endswith(".txt"))
         self.assertEqual(body["output_format"], "txt")
 
@@ -74,8 +89,8 @@ class ParseApiTests(unittest.TestCase):
             "output_format": "md",
             "download": True,
         })
-        self.assertEqual(r.status_code, 200)
-        body = r.get_json()
+        self.assertEqual(r.status_code, 202)
+        body = self.await_job(r.get_json()["id"])
         self.assertEqual(body["status"], "completed")
         self.assertEqual(body["attempts_used"], 1)
         self.assertEqual(body["max_attempts"], 3)
@@ -127,13 +142,63 @@ class ParseApiTests(unittest.TestCase):
             r = self.post({"url": "https://weixin.qq.com/sph/demo", "download": False})
         finally:
             appmod.RETRY_SLEEPER = old_sleep
-        self.assertEqual(r.status_code, 503)
-        self.assertEqual(r.content_type, "application/json")
-        body = r.get_json()
-        self.assertFalse(body["ok"])
-        self.assertEqual(body["job"]["attempts_used"], 3)
-        self.assertEqual(len(body["job"]["retry_errors"]), 3)
-        self.assertEqual(body["error"]["code"], "BROWSERLESS_UNREACHABLE")
+        self.assertEqual(r.status_code, 202)
+        body = self.await_job(r.get_json()["id"])
+        self.assertEqual(body["status"], "failed")
+        self.assertEqual(body["attempts_used"], 3)
+        self.assertEqual(len(body["retry_errors"]), 3)
+        self.assertEqual(body["error_code"], "BROWSERLESS_UNREACHABLE")
+
+    def test_returns_immediately_and_polls_until_completion(self):
+        started, release = threading.Event(), threading.Event()
+
+        def slow_analyzer(*_):
+            started.set()
+            release.wait(4)
+            return {
+                "content": "slow result",
+                "previewUrl": "https://channels.weixin.qq.com/finder-preview/demo",
+                "directUrl": "https://finder.video.qq.com/demo.mp4",
+                "card": {"title": "Slow"},
+            }
+        appmod.analyze_with_yuanbao = slow_analyzer
+        started_at = time.monotonic()
+        r = self.post({"url": "https://weixin.qq.com/sph/slow", "download": False})
+        self.assertEqual(r.status_code, 202)
+        self.assertLess(time.monotonic() - started_at, 1)
+        job_id = r.get_json()["id"]
+        self.assertTrue(started.wait(2))
+        pending = self.client.get(f"/api/history/{job_id}", headers=self.auth()).get_json()["job"]
+        self.assertEqual(pending["status"], "running")
+        blocked = self.client.delete(f"/api/history/{job_id}", headers=self.auth())
+        self.assertEqual(blocked.status_code, 409)
+        self.assertEqual(blocked.get_json()["error"]["code"], "JOB_ACTIVE")
+        release.set()
+        result = self.await_job(job_id)
+        self.assertEqual(result["status"], "completed")
+        self.assertEqual(result["content"], "slow result")
+
+    def test_bounded_queue_returns_429_without_creating_another_job(self):
+        original_slots = appmod.JOB_SLOTS
+        blocker = threading.Event()
+        appmod.JOB_SLOTS = threading.BoundedSemaphore(1)
+        try:
+            original_analyzer = appmod.analyze_with_yuanbao
+            def waiting(*args):
+                blocker.wait(4)
+                return original_analyzer(*args)
+            appmod.analyze_with_yuanbao = waiting
+            first = self.post({"url": "https://weixin.qq.com/sph/first", "download": False})
+            self.assertEqual(first.status_code, 202)
+            second = self.post({"url": "https://weixin.qq.com/sph/second", "download": False})
+            self.assertEqual(second.status_code, 429)
+            self.assertEqual(second.get_json()["error"]["code"], "QUEUE_FULL")
+            blocker.set()
+            self.assertEqual(self.await_job(first.get_json()["id"])["status"], "completed")
+            self.assertEqual(len(appmod.HISTORY_STORE.list_jobs()), 1)
+        finally:
+            blocker.set()
+            appmod.JOB_SLOTS = original_slots
 
     def test_empty_card_title_uses_human_fallback_filename(self):
         appmod.analyze_with_yuanbao = lambda *_: {
@@ -143,8 +208,8 @@ class ParseApiTests(unittest.TestCase):
             "card": {"title": "", "coverUrl": ""},
         }
         r = self.post({"url": "https://weixin.qq.com/sph/demo", "download": False, "output_format": "md"})
-        self.assertEqual(r.status_code, 200)
-        body = r.get_json()
+        self.assertEqual(r.status_code, 202)
+        body = self.await_job(r.get_json()["id"])
         self.assertEqual(body["title"], "微信视频号")
         self.assertRegex(body["text"]["filename"], r"^微信视频号__\d{6}\.md$")
 
