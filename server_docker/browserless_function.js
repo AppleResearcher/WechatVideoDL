@@ -138,11 +138,20 @@ module.exports = async ({ page, context }) => {
   if (!editorText) throw new Error("YUANBAO_EDITOR_EMPTY");
   await page.waitForSelector("#yuanbao-send-btn", { timeout: 10000 });
   await page.click("#yuanbao-send-btn");
+  // Video-card generation is often slower on the first Yuanbao request.
+  // Previously the fixed 65s cutoff made a second identical chat request
+  // necessary. Allow more time without blocking the HTTP client (async API).
   try {
-    await page.waitForSelector(".hyc-link-card", { timeout: 65000 });
+    await page.waitForSelector(".hyc-link-card", { timeout: 110000 });
   } catch (err) {
-    const body = await page.evaluate(() => document.body?.innerText || "");
-    throw new Error("YUANBAO_CARD_TIMEOUT:" + body.slice(-1200));
+    // Safe diagnostics only: never include the chat body, session or cookies
+    // in Browserless' error string or application retry history.
+    const state = await page.evaluate(() => ({
+      editorReady: Boolean(document.querySelector('[contenteditable="true"]')),
+      chatPresent: Boolean(document.querySelector("#chat-content")),
+      chatLength: Math.min(9999, (document.querySelector("#chat-content")?.innerText || "").length),
+    })).catch(() => ({}));
+    throw new Error("YUANBAO_CARD_TIMEOUT:" + JSON.stringify(state));
   }
 
   let rawContent = "";

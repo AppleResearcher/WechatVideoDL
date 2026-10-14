@@ -204,8 +204,23 @@ MAX_PENDING_JOBS=8
 | `MAX_PENDING_JOBS` | `8` | 同时运行与排队任务的总上限（单 Browserless worker） |
 | `BROWSERLESS_URL` | 自动 | 外部 Browserless，可选 |
 | `BROWSERLESS_IMAGE` | 固定默认 | Browserless 镜像覆盖 |
+| `BROWSER_TIMEOUT` | `300` | 元宝浏览器自动化最长等待（秒）；应大于视频卡片等待 110 秒及后续解析时间 |
 
 ---
+
+### 元宝视频卡片首次响应慢
+
+元宝视频号卡片可能需要较长时间才能生成。Browserless 函数现在最多等待约
+**110 秒**（此前 65 秒），配合应用端 300 秒与 Browserless 360 秒的总超时设置。
+只有超时后才会按原重试规则进入下一次尝试（默认总共最多 3 次）。
+
+当视频卡片仍未出现时，后台历史任务会明确记录
+`YUANBAO_CARD_TIMEOUT`，而非笼统的 HTTP 502。
+浏览器错误只记录非敏感状态标记和错误代码，不记录网页正文。
+
+安全提醒：旧版 Browserless 的默认调试日志会打印 `/function` 请求上下文，
+可能包含 Cookie/Session。配套 Compose 将 `DEBUG=-*`，关闭该类详细日志。
+此选项不会阻止 Docker 本机持有人读取已有旧日志；请妥善保护本机账户权限。
 
 ## 4. Browserless
 
