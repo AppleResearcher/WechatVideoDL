@@ -3,7 +3,7 @@ services:
     build: .
     restart: unless-stopped
     ports:
-      - "${APP_PORT:-18770}:8080"
+      - "127.0.0.1:${APP_PORT:-18770}:8080"
     environment:
       BROWSERLESS_URL: ${BROWSERLESS_URL:-http://browserless:3000}
       BROWSERLESS_TOKEN: ${BROWSERLESS_TOKEN}
@@ -26,3 +26,13 @@ services:
     extra_hosts:
       - "host.docker.internal:host-gateway"
     mem_limit: "512m"
+    networks:
+      default: {}
+      npm_proxy:
+        aliases:
+          - wechatvideodl
+
+networks:
+  npm_proxy:
+    external: true
+    name: npm_default
