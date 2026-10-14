@@ -275,7 +275,9 @@
     if (job.thumbnail?.download_path) {
       const img = document.createElement("img"); img.className = "history-thumbnail"; img.src = job.thumbnail.download_path; img.alt = `${titleText} 缩略图`; visual.appendChild(img);
     } else {
-      const placeholder = document.createElement("div"); placeholder.className = "history-thumbnail-placeholder"; placeholder.textContent = "VIDEO"; visual.appendChild(placeholder);
+      const placeholder = document.createElement("div"); placeholder.className = "history-thumbnail-placeholder";
+      placeholder.textContent = job.download_requested === false ? "MD Only" : "No Cover";
+      visual.appendChild(placeholder);
     }
     const main = document.createElement("div"); main.className = "history-main";
     const heading = document.createElement("h3"); heading.className = "history-title"; heading.textContent = titleText;
