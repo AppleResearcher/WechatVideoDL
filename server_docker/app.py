@@ -8,6 +8,7 @@ import secrets
 import subprocess
 import threading
 import time
+from concurrent.futures import ThreadPoolExecutor
 from functools import wraps
 from pathlib import Path
 from typing import Any
@@ -52,6 +53,13 @@ PROXY_HOPS = max(1, int(os.environ.get("PROXY_HOPS", "1")))
 MAX_PARSE_ATTEMPTS = min(3, max(1, int(os.environ.get("MAX_PARSE_ATTEMPTS", "3"))))
 RETRY_SLEEPER = time.sleep
 HISTORY_STORE: HistoryStore | None = None
+HISTORY_STORE_LOCK = threading.Lock()
+
+# A single Browserless session and a bounded backlog protect the host.
+MAX_PENDING_JOBS = max(1, int(os.environ.get("MAX_PENDING_JOBS", "8")))
+JOB_SLOTS = threading.BoundedSemaphore(MAX_PENDING_JOBS)
+JOB_SUBMISSION_LOCK = threading.Lock()
+JOB_EXECUTOR = ThreadPoolExecutor(max_workers=1, thread_name_prefix="video-parse")
 
 USER_AGENT = os.environ.get(
     "BROWSER_USER_AGENT",
@@ -367,7 +375,9 @@ def make_file_url(name: str) -> str:
 def get_history_store() -> HistoryStore:
     global HISTORY_STORE
     if HISTORY_STORE is None:
-        HISTORY_STORE = HistoryStore(DATA_DIR / "history.db")
+        with HISTORY_STORE_LOCK:
+            if HISTORY_STORE is None:
+                HISTORY_STORE = HistoryStore(DATA_DIR / "history.db")
     return HISTORY_STORE
 
 
@@ -385,7 +395,10 @@ def serialize_job(job: dict[str, Any]) -> dict[str, Any]:
         "preset_name": job.get("preset_name"),
         "output_format": job.get("output_format"),
         "download_requested": job.get("download_requested"),
-        "status": job.get("status"),
+        # Legacy SQLite allows only running/completed/failed. A pending
+        # running record with zero attempts is represented as queued to clients.
+        "status": ("queued" if job.get("status") == "running"
+                   and not job.get("attempts_used") else job.get("status")),
         "attempts_used": job.get("attempts_used", 0),
         "max_attempts": job.get("max_attempts", MAX_PARSE_ATTEMPTS),
         "retry_errors": job.get("retry_errors", []),
@@ -600,6 +613,10 @@ def api_history_delete(job_id: str):
     job = store.get_job(job_id)
     if job is None:
         return jsonify({"ok": False, "error": {"code": "NOT_FOUND", "message": "历史记录不存在"}}), 404
+    if job.get("status") == "running":
+        return jsonify({"ok": False, "error": {
+            "code": "JOB_ACTIVE", "message": "任务仍在排队或执行，完成后才可删除",
+        }}), 409
     deleted_files: list[str] = []
     for key in ("text_filename", "video_filename", "thumbnail_filename", "bundle_filename"):
         path = safe_owned_path(DOWNLOAD_DIR, job.get(key))
@@ -613,9 +630,38 @@ def api_history_delete(job_id: str):
     return jsonify({"ok": True, "id": job_id, "deleted_files": deleted_files})
 
 
+def _process_parse_job(
+    job_id: str, input_url: str, prompt: str | None,
+    preset: dict[str, Any] | None, output_format: str,
+    do_download: bool, store: HistoryStore,
+) -> None:
+    """Work continues even after the original HTTP client disconnects."""
+    try:
+        with PROCESS_LOCK:
+            run_parse_job(
+                job_id, input_url, prompt, preset, output_format, do_download,
+                store=store,
+                download_dir=DOWNLOAD_DIR,
+                analyzer=analyze_with_yuanbao,
+                downloader=download_video,
+                max_attempts=MAX_PARSE_ATTEMPTS,
+                sleeper=RETRY_SLEEPER,
+            )
+    except Exception:
+        # Never include credentials or private download URLs in worker logs.
+        app.logger.error("Background parse job %s failed unexpectedly", job_id)
+        store.update_job(
+            job_id, status="failed", error_code="WORKER_ERROR",
+            error_message="后台任务发生内部错误，请检查服务日志",
+        )
+    finally:
+        JOB_SLOTS.release()
+
+
 @app.route("/api/parse", methods=["POST"])
 @api_or_session_required
 def api_parse():
+    """Queue work and return HTTP 202; poll GET /api/history/<id>."""
     try:
         body = request.get_json(force=True, silent=False) or {}
         input_url = valid_input_url(str(body.get("url") or ""))
@@ -628,50 +674,63 @@ def api_parse():
             raise AppError("INVALID_OUTPUT_FORMAT", "output_format 仅支持 txt 或 md", 400)
         do_download = bool(body.get("download", True))
         preset = get_preset(str(body.get("preset_id") or "") or None)
-        job_id = next_id()
-        store = get_history_store()
-        store.create_job(
-            id=job_id,
-            input_url=input_url,
-            prompt=prompt,
-            preset_id=preset["id"] if preset else None,
-            preset_name=preset["name"] if preset else None,
-            output_format=output_format,
-            download_requested=do_download,
-            max_attempts=MAX_PARSE_ATTEMPTS,
-        )
-        with PROCESS_LOCK:
-            job = run_parse_job(
-                job_id,
-                input_url,
-                prompt,
-                preset,
-                output_format,
-                do_download,
-                store=store,
-                download_dir=DOWNLOAD_DIR,
-                analyzer=analyze_with_yuanbao,
-                downloader=download_video,
-                max_attempts=MAX_PARSE_ATTEMPTS,
-                sleeper=RETRY_SLEEPER,
-            )
-        serialized = serialize_job(job)
-        if job.get("status") == "completed":
-            return jsonify({"ok": True, **serialized})
-        return jsonify({
-            "ok": False,
-            "error": {
-                "code": job.get("error_code") or "PARSE_FAILED",
-                "message": job.get("error_message") or "解析失败",
-            },
-            "job": serialized,
-        }), failed_job_status(job)
-    except BadRequest as exc:
-        return jsonify({"ok": False, "error": {"code": "BAD_REQUEST", "message": "请求 JSON 格式不正确", "detail": str(exc)}}), 400
+
+        if not JOB_SLOTS.acquire(blocking=False):
+            raise AppError("QUEUE_FULL", "任务队列已满，请稍后再试", 429)
+        job_id = None
+        store = None
+        try:
+            # Sequence file allocation must be serialized across request threads.
+            with JOB_SUBMISSION_LOCK:
+                store = get_history_store()
+                job_id = next_id()
+                store.create_job(
+                    id=job_id,
+                    input_url=input_url,
+                    prompt=prompt,
+                    preset_id=preset["id"] if preset else None,
+                    preset_name=preset["name"] if preset else None,
+                    output_format=output_format,
+                    download_requested=do_download,
+                    max_attempts=MAX_PARSE_ATTEMPTS,
+                )
+                JOB_EXECUTOR.submit(
+                    _process_parse_job, job_id, input_url, prompt, preset,
+                    output_format, do_download, store,
+                )
+        except Exception:
+            JOB_SLOTS.release()
+            if job_id is not None and store is not None:
+                try:
+                    store.update_job(
+                        job_id, status="failed", error_code="SUBMISSION_FAILED",
+                        error_message="后台任务未能启动，请重新提交",
+                    )
+                except Exception:
+                    pass
+            raise
+        poll_path = f"/api/history/{job_id}"
+        response = jsonify({
+            "ok": True, **serialize_job(store.get_job(job_id)),
+            "poll_url": poll_path,
+        })
+        response.status_code = 202
+        response.headers["Location"] = poll_path
+        response.headers["Cache-Control"] = "no-store"
+        return response
+    except BadRequest:
+        return jsonify({"ok": False, "error": {
+            "code": "BAD_REQUEST", "message": "请求 JSON 格式不正确",
+        }}), 400
     except AppError as exc:
-        return jsonify({"ok": False, "error": {"code": exc.code, "message": exc.message, "detail": exc.detail}}), exc.status
-    except Exception as exc:
-        return jsonify({"ok": False, "error": {"code": "INTERNAL_ERROR", "message": str(exc)}}), 500
+        return jsonify({"ok": False, "error": {
+            "code": exc.code, "message": exc.message,
+        }}), exc.status
+    except Exception:
+        app.logger.error("Unable to enqueue parse request")
+        return jsonify({"ok": False, "error": {
+            "code": "INTERNAL_ERROR", "message": "任务提交失败，请稍后重试",
+        }}), 500
 
 
 if __name__ == "__main__":

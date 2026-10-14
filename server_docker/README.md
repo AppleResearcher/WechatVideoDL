@@ -185,6 +185,7 @@ TRUST_PROXY_HEADERS=false
 PROXY_HOPS=1
 
 MAX_PARSE_ATTEMPTS=3
+MAX_PENDING_JOBS=8
 ```
 
 ### 环境变量
@@ -200,6 +201,7 @@ MAX_PARSE_ATTEMPTS=3
 | `TRUST_PROXY_HEADERS` | `false` | 是否信任 `X-Forwarded-*` |
 | `PROXY_HOPS` | `1` | 可信 proxy 层数 |
 | `MAX_PARSE_ATTEMPTS` | `3` | 最多总尝试次数 |
+| `MAX_PENDING_JOBS` | `8` | 同时运行与排队任务的总上限（单 Browserless worker） |
 | `BROWSERLESS_URL` | 自动 | 外部 Browserless，可选 |
 | `BROWSERLESS_IMAGE` | 固定默认 | Browserless 镜像覆盖 |
 
@@ -374,6 +376,22 @@ curl -u 'USERNAME:PASSWORD' http://SERVER_IP:18770/api/presets
 ### History
 
 ```bash
+### 异步提交与进度查询（HTTP 202）
+
+`POST /api/parse` 在通过输入验证并成功入队后**立即返回 HTTP 202**，包含
+`id`、`poll_url` 和初始的 `queued` / `running` 状态，不再等待元宝解析或 MP4 下载。
+客户端随后每隔约 3 秒调用 `GET /api/history/<id>`；响应中的 `job.status`
+依次为 `queued`、`running`、`completed` 或 `failed`。状态为 `completed`
+时，`job.text.download_path`、`job.video.download_path` 等提供实际成果。
+工作台刷新后会用本地保存的任务 ID 自动恢复轮询；历史记录也会显示当前任务。
+
+单进程 Gunicorn（Dockerfile 默认 `-w 1`）使用一条后台线程串行执行，最多允许
+`MAX_PENDING_JOBS` 个正在运行或排队的任务；超出返回 JSON `429 QUEUE_FULL`。
+运行中的任务不可删除（`409 JOB_ACTIVE`）。浏览器断线不会中止后台任务，
+但**容器重启或进程退出不会自动恢复进行中的任务**：启动时这些任务会标记
+`INTERRUPTED`，用户可在历史记录核实后重新提交。为避免任务丢失，不要在运行任务时部署升级；
+需要跨容器重启可靠恢复的场景应另用持久化工作队列。
+
 curl -u 'USERNAME:PASSWORD' http://SERVER_IP:18770/api/history
 curl -u 'USERNAME:PASSWORD' http://SERVER_IP:18770/api/history/wxv_000001
 ```
