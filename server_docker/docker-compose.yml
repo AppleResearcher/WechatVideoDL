@@ -14,6 +14,8 @@ services:
       TRUST_PROXY_HEADERS: ${TRUST_PROXY_HEADERS:-false}
       PROXY_HOPS: ${PROXY_HOPS:-1}
       MAX_PARSE_ATTEMPTS: ${MAX_PARSE_ATTEMPTS:-3}
+      MAX_PENDING_JOBS: ${MAX_PENDING_JOBS:-8}
+      POLL_INTERVAL_SECONDS: ${POLL_INTERVAL_SECONDS:-3}
       YUANBAO_COOKIE_FILE: /data/yuanbao.tencent.com_cookies.txt
       YUANBAO_SESSION_FILE: /data/yuanbao_session.json
       BROWSERLESS_FUNCTION_FILE: /app/browserless_function.js

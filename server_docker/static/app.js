@@ -174,7 +174,8 @@
           progressTitle.textContent = queued ? `任务 ${jobId} 排队中` : `任务 ${jobId} 正在解析`;
           progressDetail.textContent = queued ? "等待浏览器空闲，任务会自动开始。"
             : `第 ${data.attempts_used || 1} / ${data.max_attempts || 3} 次尝试 · 即使关闭页面也会继续。`;
-          await sleep(3000);
+          const pollSeconds = Math.max(1, Number(data.poll_interval_seconds) || 3);
+          await sleep(pollSeconds * 1000);
         }
       } finally {
         watchingJob = false;

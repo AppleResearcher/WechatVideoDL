@@ -57,6 +57,7 @@ HISTORY_STORE_LOCK = threading.Lock()
 
 # A single Browserless session and a bounded backlog protect the host.
 MAX_PENDING_JOBS = max(1, int(os.environ.get("MAX_PENDING_JOBS", "8")))
+POLL_INTERVAL_SECONDS = min(30, max(1, int(os.environ.get("POLL_INTERVAL_SECONDS", "3"))))
 JOB_SLOTS = threading.BoundedSemaphore(MAX_PENDING_JOBS)
 JOB_SUBMISSION_LOCK = threading.Lock()
 JOB_EXECUTOR = ThreadPoolExecutor(max_workers=1, thread_name_prefix="video-parse")
@@ -395,6 +396,7 @@ def serialize_job(job: dict[str, Any]) -> dict[str, Any]:
         "preset_name": job.get("preset_name"),
         "output_format": job.get("output_format"),
         "download_requested": job.get("download_requested"),
+        "poll_interval_seconds": POLL_INTERVAL_SECONDS,
         # Legacy SQLite allows only running/completed/failed. A pending
         # running record with zero attempts is represented as queued to clients.
         "status": ("queued" if job.get("status") == "running"
@@ -540,6 +542,11 @@ def health():
         "browserless": browserless,
         "cookie_file": COOKIE_FILE.exists(),
         "busy": PROCESS_LOCK.locked(),
+        "async_jobs": True,
+        "max_pending_jobs": MAX_PENDING_JOBS,
+        "worker_model": "single-process",
+        "queue_persistent": False,
+        "poll_interval_seconds": POLL_INTERVAL_SECONDS,
         "detail": detail,
     }), (200 if browserless and COOKIE_FILE.exists() else 503)
 
@@ -717,15 +724,20 @@ def api_parse():
         response.status_code = 202
         response.headers["Location"] = poll_path
         response.headers["Cache-Control"] = "no-store"
+        response.headers["Retry-After"] = str(POLL_INTERVAL_SECONDS)
         return response
     except BadRequest:
         return jsonify({"ok": False, "error": {
             "code": "BAD_REQUEST", "message": "请求 JSON 格式不正确",
         }}), 400
     except AppError as exc:
-        return jsonify({"ok": False, "error": {
+        response = jsonify({"ok": False, "error": {
             "code": exc.code, "message": exc.message,
-        }}), exc.status
+        }})
+        response.status_code = exc.status
+        if exc.code == "QUEUE_FULL":
+            response.headers["Retry-After"] = str(POLL_INTERVAL_SECONDS)
+        return response
     except Exception:
         app.logger.error("Unable to enqueue parse request")
         return jsonify({"ok": False, "error": {

@@ -75,12 +75,15 @@ class ParseApiTests(unittest.TestCase):
     def test_omitted_output_format_defaults_to_txt(self):
         r = self.post({"url": "https://weixin.qq.com/sph/demo", "download": False})
         self.assertEqual(r.status_code, 202)
+        body = self.await_job(r.get_json()["id"])
         self.assertEqual(r.headers["Location"], f"/api/history/{r.get_json()['id']}")
         self.assertEqual(r.headers["Cache-Control"], "no-store")
+        self.assertEqual(r.headers["Retry-After"], "3")
+        self.assertEqual(r.get_json()["poll_interval_seconds"], 3)
         self.assertTrue(r.get_json()["ok"])
-        body = self.await_job(r.get_json()["id"])
         self.assertTrue(body["text"]["filename"].endswith(".txt"))
         self.assertEqual(body["output_format"], "txt")
+        self.assertEqual(body["poll_interval_seconds"], 3)
 
     def test_markdown_output_and_retry_metadata_and_proxy_safe_links(self):
         r = self.post({
@@ -193,6 +196,7 @@ class ParseApiTests(unittest.TestCase):
             second = self.post({"url": "https://weixin.qq.com/sph/second", "download": False})
             self.assertEqual(second.status_code, 429)
             self.assertEqual(second.get_json()["error"]["code"], "QUEUE_FULL")
+            self.assertEqual(second.headers["Retry-After"], "3")
             blocker.set()
             self.assertEqual(self.await_job(first.get_json()["id"])["status"], "completed")
             self.assertEqual(len(appmod.HISTORY_STORE.list_jobs()), 1)

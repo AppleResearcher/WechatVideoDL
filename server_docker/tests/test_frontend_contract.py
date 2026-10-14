@@ -75,6 +75,8 @@ class FrontendContractTests(unittest.TestCase):
         js = (ROOT / "static" / "app.js").read_text("utf-8")
         self.assertIn('routePath("api/parse")', js)
         self.assertIn("async function watchJob", js)
+        self.assertIn("poll_interval_seconds", js)
+        self.assertNotIn("await sleep(3000)", js)
         self.assertIn("result-progress", (ROOT / "templates" / "index.html").read_text("utf-8"))
         self.assertIn('routePath(`api/history/${encodeURIComponent(jobId)}`)', js)
         self.assertIn("wvd-active-job", js)
