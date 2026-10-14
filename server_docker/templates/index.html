@@ -55,6 +55,11 @@
       <div><span class="panel-index">02</span><h2>任务结果</h2></div>
       <span id="result-status" class="status-badge idle">等待任务</span>
     </div>
+    <div id="result-progress" class="result-progress hidden" role="status" aria-live="polite">
+      <strong id="progress-title">任务已提交</strong>
+      <p id="progress-detail">正在等待后台更新…</p>
+      <a href="{{ url_for('history_page') }}">在历史记录中查看</a>
+    </div>
     <div id="result-empty" class="result-empty">
       <div class="orbital-mark"><span></span><span></span><span></span></div>
       <h3>结果会出现在这里</h3>

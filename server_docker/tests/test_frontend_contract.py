@@ -71,6 +71,19 @@ class FrontendContractTests(unittest.TestCase):
         self.assertIn("job.title", js[js.index("const visible = jobs.filter"):])
         self.assertIn("按标题", history)
 
+    def test_async_polling_and_refresh_recovery_contract(self):
+        js = (ROOT / "static" / "app.js").read_text("utf-8")
+        self.assertIn('routePath("api/parse")', js)
+        self.assertIn("async function watchJob", js)
+        self.assertIn("result-progress", (ROOT / "templates" / "index.html").read_text("utf-8"))
+        self.assertIn('routePath(`api/history/${encodeURIComponent(jobId)}`)', js)
+        self.assertIn("wvd-active-job", js)
+        self.assertIn('localStorage.setItem(activeJobKey', js)
+        self.assertIn('localStorage.removeItem(activeJobKey)', js)
+        self.assertIn('data.status === "queued"', js)
+        self.assertIn('data.status === "completed"', js)
+        self.assertIn('data.status === "failed"', js)
+
     def test_workspace_template_has_title_thumbnail_and_source_action_slots(self):
         index = (ROOT / "templates" / "index.html").read_text("utf-8")
         for token in ['id="result-title"', 'id="result-thumbnail"', 'id="result-source-actions"']:

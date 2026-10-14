@@ -162,6 +162,13 @@ class HistoryApiTests(unittest.TestCase):
         self.assertIsNotNone(self.store.get_job("wxv_000204"))
         self.assertTrue(neighbor.exists())
 
+    def test_running_job_cannot_be_deleted(self):
+        self.create("wxv_000212", status="running")
+        response = self.client.delete("/api/history/wxv_000212", headers=self.headers)
+        self.assertEqual(response.status_code, 409)
+        self.assertEqual(response.get_json()["error"]["code"], "JOB_ACTIVE")
+        self.assertIsNotNone(self.store.get_job("wxv_000212"))
+
     def test_delete_tolerates_missing_optional_file(self):
         self.create("wxv_000209", title="缺文件")
         text = self.downloads / "缺文件__000209.md"

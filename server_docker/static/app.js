@@ -77,42 +77,141 @@
       if (health.ok) { healthPill.classList.add("ok"); healthPill.querySelector("span:last-child").textContent = "服务在线"; }
     } catch (_) { healthPill.querySelector("span:last-child").textContent = "服务状态未知"; }
 
+    const progressBox = $("result-progress");
+    const progressTitle = $("progress-title");
+    const progressDetail = $("progress-detail");
+    const activeJobKey = "wvd-active-job";
+    const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+    let watchingJob = false;
+
+    function setBusy(busy) {
+      parseButton.disabled = busy;
+      parseButton.querySelector("span:first-child").textContent = busy ? "任务进行中 · 可刷新页面" : "开始解析";
+    }
+
+    function showError(message, details = "") {
+      progressBox.classList.add("hidden");
+      setStatus(resultStatus, "失败", "failed");
+      resultContent.classList.add("hidden");
+      resultError.classList.remove("hidden");
+      $("error-message").textContent = message;
+      const box = $("error-details");
+      box.classList.toggle("hidden", !details);
+      $("error-excerpt").textContent = details;
+    }
+
+    function showResult(data) {
+      progressBox.classList.add("hidden");
+      resultContent.classList.remove("hidden");
+      resultError.classList.add("hidden");
+      setStatus(resultStatus, "已完成", "completed");
+      $("result-title").textContent = data.title || data.id || "微信视频号";
+      const thumb = $("result-thumbnail");
+      if (data.thumbnail?.download_path) { thumb.src = data.thumbnail.download_path; thumb.classList.remove("hidden"); }
+      else { thumb.removeAttribute("src"); thumb.classList.add("hidden"); }
+      renderSourceActions($("result-source-actions"), data.source_url || videoUrl.value.trim());
+      $("result-id").textContent = data.id || "—";
+      $("result-attempts").textContent = `${data.attempts_used || 1} / ${data.max_attempts || 3}`;
+      $("result-format").textContent = (data.output_format || "txt").toUpperCase();
+      analysisContent.textContent = data.content || "";
+      technicalJson.textContent = JSON.stringify(data, null, 2);
+      retryNotice.classList.toggle("hidden", !(data.retry_errors || []).length);
+      retryNotice.textContent = (data.retry_errors || []).length
+        ? `任务曾遇到 ${data.retry_errors.length} 次临时错误，后台已自动恢复。` : "";
+      downloadLinks.replaceChildren();
+      if (data.bundle?.download_path) downloadLinks.appendChild(downloadLink(data.bundle.download_path, "下载全部"));
+      if (data.text?.download_path) downloadLinks.appendChild(downloadLink(data.text.download_path, `下载 ${(data.output_format || "txt").toUpperCase()}`));
+      if (data.video?.download_path) downloadLinks.appendChild(downloadLink(data.video.download_path, "下载 MP4"));
+    }
+
+    async function watchJob(jobId) {
+      if (watchingJob) return;
+      watchingJob = true;
+      setBusy(true);
+      resultEmpty.classList.add("hidden");
+      resultContent.classList.add("hidden");
+      resultError.classList.add("hidden");
+      progressBox.classList.remove("hidden");
+      progressTitle.textContent = `任务 ${jobId} 已提交`;
+      progressDetail.textContent = "后台解析中，关闭或刷新页面不会取消任务。";
+      let failures = 0;
+      try {
+        while (true) {
+          let data;
+          try {
+            const response = await safeFetch(routePath(`api/history/${encodeURIComponent(jobId)}`), { cache: "no-store" });
+            data = response.job;
+            failures = 0;
+          } catch (error) {
+            failures += 1;
+            if (failures >= 6) {
+              // Preserve the ID: the worker may still finish after a network outage.
+              setStatus(resultStatus, "等待连接恢复", "running");
+              progressTitle.textContent = "暂时无法获取任务进度";
+              progressDetail.textContent = "后台任务可能仍在运行；刷新页面或进入历史记录可继续查看。";
+              return;
+            }
+            setStatus(resultStatus, "等待连接恢复", "running");
+            progressDetail.textContent = "网络暂时中断，正在尝试恢复进度查询。";
+            await sleep(5000);
+            continue;
+          }
+          if (!data) { showError("无法读取任务状态，请到历史记录查看。"); return; }
+          if (data.source_url) videoUrl.value = data.source_url;
+          technicalJson.textContent = JSON.stringify(data, null, 2);
+          if (data.status === "completed") {
+            localStorage.removeItem(activeJobKey);
+            showResult(data);
+            return;
+          }
+          if (data.status === "failed") {
+            localStorage.removeItem(activeJobKey);
+            showError(data.error_message || "任务失败，请查看历史记录。", data.error_code || "");
+            return;
+          }
+          const queued = data.status === "queued";
+          setStatus(resultStatus, queued ? "排队中" : "处理中", "running");
+          progressTitle.textContent = queued ? `任务 ${jobId} 排队中` : `任务 ${jobId} 正在解析`;
+          progressDetail.textContent = queued ? "等待浏览器空闲，任务会自动开始。"
+            : `第 ${data.attempts_used || 1} / ${data.max_attempts || 3} 次尝试 · 即使关闭页面也会继续。`;
+          await sleep(3000);
+        }
+      } finally {
+        watchingJob = false;
+        setBusy(false);
+      }
+    }
+
     parseButton.addEventListener("click", async () => {
+      if (watchingJob) return;
       const url = videoUrl.value.trim();
       if (!url) { videoUrl.focus(); return; }
-      parseButton.disabled = true; parseButton.querySelector("span:first-child").textContent = "解析中 · 自动重试已开启";
-      resultEmpty.classList.add("hidden"); resultContent.classList.add("hidden"); resultError.classList.add("hidden");
-      setStatus(resultStatus, "处理中", "running");
+      setBusy(true);
+      resultEmpty.classList.add("hidden");
+      resultContent.classList.add("hidden");
+      resultError.classList.add("hidden");
+      setStatus(resultStatus, "提交中", "running");
       try {
         const data = await safeFetch(routePath("api/parse"), {
           method: "POST", headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ url, prompt: promptInput.value.trim() || null, preset_id: presetSelect.value || null, output_format: outputFormat.value, download: downloadMp4.checked })
+          body: JSON.stringify({
+            url, prompt: promptInput.value.trim() || null, preset_id: presetSelect.value || null,
+            output_format: outputFormat.value, download: downloadMp4.checked
+          })
         });
-        resultContent.classList.remove("hidden"); setStatus(resultStatus, "已完成", "completed");
-        $("result-title").textContent = data.title || data.id || "微信视频号";
-        const resultThumb = $("result-thumbnail");
-        if (data.thumbnail?.download_path) { resultThumb.src = data.thumbnail.download_path; resultThumb.classList.remove("hidden"); }
-        else { resultThumb.removeAttribute("src"); resultThumb.classList.add("hidden"); }
-        renderSourceActions($("result-source-actions"), data.source_url || url);
-        $("result-id").textContent = data.id || "—"; $("result-attempts").textContent = `${data.attempts_used || 1} / ${data.max_attempts || 3}`; $("result-format").textContent = (data.output_format || "txt").toUpperCase();
-        analysisContent.textContent = data.content || ""; technicalJson.textContent = JSON.stringify(data, null, 2);
-        retryNotice.classList.toggle("hidden", !(data.retry_errors || []).length);
-        retryNotice.textContent = (data.retry_errors || []).length ? `任务曾遇到 ${data.retry_errors.length} 次临时错误，后台已自动恢复。` : "";
-        downloadLinks.replaceChildren();
-        if (data.bundle?.download_path) downloadLinks.appendChild(downloadLink(data.bundle.download_path, "下载全部"));
-        if (data.text?.download_path) downloadLinks.appendChild(downloadLink(data.text.download_path, `下载 ${(data.output_format || "txt").toUpperCase()}`));
-        if (data.video?.download_path) downloadLinks.appendChild(downloadLink(data.video.download_path, "下载 MP4"));
+        if (!data.id) throw new Error("服务器未返回任务 ID，请在历史记录中确认是否已提交。");
+        localStorage.setItem(activeJobKey, data.id);
+        await watchJob(data.id);
       } catch (error) {
-        setStatus(resultStatus, "失败", "failed"); resultError.classList.remove("hidden");
-        $("error-message").textContent = error.message || "请求失败";
-        const details = $("error-details"), excerpt = $("error-excerpt");
-        const data = error.data || null; const text = error.excerpt || (data ? JSON.stringify(data, null, 2) : "");
-        details.classList.toggle("hidden", !text); excerpt.textContent = text;
-        if (data?.job) technicalJson.textContent = JSON.stringify(data.job, null, 2);
+        showError(error.message || "请求失败", error.excerpt || "");
       } finally {
-        parseButton.disabled = false; parseButton.querySelector("span:first-child").textContent = "开始解析";
+        if (!watchingJob) setBusy(false);
       }
     });
+    const activeJob = localStorage.getItem(activeJobKey);
+    if (activeJob && /^wxv_\d{6}$/.test(activeJob)) {
+      watchJob(activeJob); // Recover ongoing work after reload/navigation.
+    } else if (activeJob) localStorage.removeItem(activeJobKey);
     $("copy-content")?.addEventListener("click", async () => { if (analysisContent.textContent) await navigator.clipboard.writeText(analysisContent.textContent); });
   }
 
@@ -160,11 +259,12 @@
       visible.forEach((job) => root.appendChild(historyCard(job, load)));
     };
     const load = async () => {
-      root.innerHTML = '<div class="history-empty panel">正在加载历史记录…</div>';
+      if (!jobs.length) root.innerHTML = '<div class="history-empty panel">正在加载历史记录…</div>';
       try { const data = await safeFetch(routePath("api/history")); jobs = data.jobs || []; render(); }
       catch (error) { root.replaceChildren(); const box = document.createElement("div"); box.className = "history-empty panel"; box.textContent = error.message; root.appendChild(box); }
     };
     filter.addEventListener("input", render); refresh.addEventListener("click", load); await load();
+    setInterval(() => { if (jobs.some((job) => ["queued", "running"].includes(job.status))) load(); }, 4000);
   }
 
   function historyCard(job, reload) {
@@ -180,7 +280,7 @@
     const heading = document.createElement("h3"); heading.className = "history-title"; heading.textContent = titleText;
     const top = document.createElement("div"); top.className = "history-topline";
     const id = document.createElement("span"); id.className = "history-id"; id.textContent = job.id;
-    const badge = document.createElement("span"); setStatus(badge, job.status === "completed" ? "已完成" : job.status === "failed" ? "失败" : "进行中", job.status);
+    const badge = document.createElement("span"); setStatus(badge, job.status === "completed" ? "已完成" : job.status === "failed" ? "失败" : job.status === "queued" ? "排队中" : "进行中", job.status === "queued" ? "running" : job.status);
     const date = document.createElement("span"); date.className = "history-date"; date.textContent = fmtDate(job.created_at);
     top.append(id, badge, date);
     const sourceActions = document.createElement("div"); sourceActions.className = "source-actions history-source-actions";
@@ -193,6 +293,7 @@
     if (job.video?.download_path) actions.appendChild(downloadLink(job.video.download_path, "MP4"));
     const detailBtn = document.createElement("button"); detailBtn.className = "text-button"; detailBtn.type = "button"; detailBtn.textContent = "详情";
     const del = document.createElement("button"); del.className = "danger-button"; del.type = "button"; del.textContent = "删除";
+    if (job.status === "queued" || job.status === "running") { del.disabled = true; del.title = "任务完成后才可删除"; }
     actions.append(detailBtn, del); card.append(visual, main, actions);
     const detail = document.createElement("div"); detail.className = "history-detail hidden"; const pre = document.createElement("pre"); detail.appendChild(pre); card.appendChild(detail);
     detailBtn.addEventListener("click", async () => { if (!detail.classList.contains("hidden")) { detail.classList.add("hidden"); return; } try { const data = await safeFetch(routePath(`api/history/${encodeURIComponent(job.id)}`)); pre.textContent = data.job.content || data.job.error_message || "没有文本内容"; detail.classList.remove("hidden"); } catch (e) { pre.textContent = e.message; detail.classList.remove("hidden"); } });
