@@ -45,6 +45,7 @@ class HybridVoiceTests(unittest.TestCase):
         self.assertEqual(plist["ProgramArguments"][0], str(fake_python))
         self.assertNotIn("Sockets", plist)
         self.assertNotIn("NetworkState", plist)
+        self.assertIn("/opt/homebrew/bin", plist["EnvironmentVariables"]["PATH"])
 
     def test_worker_transcribes_only_owned_media(self):
         mp4=(self.data/"downloads"/"clip.mp4")

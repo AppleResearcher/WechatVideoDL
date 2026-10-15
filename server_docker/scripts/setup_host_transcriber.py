@@ -26,7 +26,12 @@ def make_plist(python: Path, worker: Path, data_dir: Path) -> dict:
         "RunAtLoad": True,
         "KeepAlive": True,
         "ThrottleInterval": 20,
-        "EnvironmentVariables": {"PYTHONUNBUFFERED": "1", "OMP_NUM_THREADS": "4"},
+        # launchd does not inherit an interactive Homebrew shell PATH.
+        # Whisper invokes FFmpeg as an external command during audio decoding.
+        "EnvironmentVariables": {
+            "PYTHONUNBUFFERED": "1", "OMP_NUM_THREADS": "4",
+            "PATH": "/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin",
+        },
         "StandardOutPath": str(queue / "worker.stdout.log"),
         "StandardErrorPath": str(queue / "worker.stderr.log"),
     }
@@ -41,7 +46,11 @@ def main() -> None:
     args = parser.parse_args()
     if sys.platform != "darwin":
         raise SystemExit("launchd setup is only supported on macOS")
-    python = Path(args.python).expanduser().resolve(strict=True)
+    # Preserve the venv interpreter symlink: resolving it can remove the
+    # virtual-environment sys.path that contains whisper and torch.
+    python = Path(args.python).expanduser().absolute()
+    if not python.is_file():
+        raise SystemExit("Whisper Python executable does not exist")
     worker = Path(__file__).with_name("host_transcription_worker.py").resolve(strict=True)
     data = Path(args.data_dir).expanduser().resolve(strict=True)
     if not (data/"downloads").is_dir():
