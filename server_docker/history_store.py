@@ -35,6 +35,10 @@ JOB_COLUMNS = {
     "text_bytes",
     "video_bytes",
     "elapsed_ms",
+    "transcript_filename",
+    "analysis_source",
+    "analysis_status",
+    "stage",
 }
 
 
@@ -85,12 +89,19 @@ class HistoryStore:
                     video_filename TEXT,
                     text_bytes INTEGER,
                     video_bytes INTEGER,
-                    elapsed_ms INTEGER
+                    elapsed_ms INTEGER,
+                    transcript_filename TEXT,
+                    analysis_source TEXT,
+                    analysis_status TEXT,
+                    stage TEXT
                 )
                 """
             )
             existing = {row[1] for row in conn.execute("PRAGMA table_info(jobs)").fetchall()}
-            for column in ("video_title", "cover_url", "thumbnail_filename", "bundle_filename"):
+            for column in (
+                "video_title", "cover_url", "thumbnail_filename", "bundle_filename",
+                "transcript_filename", "analysis_source", "analysis_status", "stage",
+            ):
                 if column not in existing:
                     conn.execute(f"ALTER TABLE jobs ADD COLUMN {column} TEXT")
             conn.execute("CREATE INDEX IF NOT EXISTS idx_jobs_created_at ON jobs(created_at DESC)")

@@ -113,7 +113,9 @@
       $("result-id").textContent = data.id || "—";
       $("result-attempts").textContent = `${data.attempts_used || 1} / ${data.max_attempts || 3}`;
       $("result-format").textContent = (data.output_format || "txt").toUpperCase();
-      analysisContent.textContent = data.content || "";
+      analysisContent.textContent = data.analysis_status === "unavailable"
+        ? (data.error_message || "元宝无法完成视频内容分析，请查看已保存的视频或口播文件。")
+        : (data.content || "");
       technicalJson.textContent = JSON.stringify(data, null, 2);
       retryNotice.classList.toggle("hidden", !(data.retry_errors || []).length);
       retryNotice.textContent = (data.retry_errors || []).length
@@ -122,6 +124,7 @@
       if (data.bundle?.download_path) downloadLinks.appendChild(downloadLink(data.bundle.download_path, "下载全部"));
       if (data.text?.download_path) downloadLinks.appendChild(downloadLink(data.text.download_path, `下载 ${(data.output_format || "txt").toUpperCase()}`));
       if (data.video?.download_path) downloadLinks.appendChild(downloadLink(data.video.download_path, "下载 MP4"));
+      if (data.transcript?.download_path) downloadLinks.appendChild(downloadLink(data.transcript.download_path, "下载完整口播"));
     }
 
     async function watchJob(jobId) {
@@ -159,9 +162,10 @@
           if (!data) { showError("无法读取任务状态，请到历史记录查看。"); return; }
           if (data.source_url) videoUrl.value = data.source_url;
           technicalJson.textContent = JSON.stringify(data, null, 2);
-          if (data.status === "completed") {
+          if (data.status === "completed" || data.status === "partial") {
             localStorage.removeItem(activeJobKey);
             showResult(data);
+            if (data.status === "partial") setStatus(resultStatus, "部分完成", "partial");
             return;
           }
           if (data.status === "failed") {
@@ -171,9 +175,17 @@
           }
           const queued = data.status === "queued";
           setStatus(resultStatus, queued ? "排队中" : "处理中", "running");
-          progressTitle.textContent = queued ? `任务 ${jobId} 排队中` : `任务 ${jobId} 正在解析`;
+          const stages = {
+            yuanbao_video: "元宝解析视频中",
+            local_transcription: "本地语音转写中",
+            yuanbao_transcript: "元宝分析口播文本中",
+            saving_results: "保存成果中"
+          };
+          progressTitle.textContent = queued ? `任务 ${jobId} 排队中`
+            : `任务 ${jobId} · ${stages[data.stage] || "正在解析"}`;
           progressDetail.textContent = queued ? "等待浏览器空闲，任务会自动开始。"
-            : `第 ${data.attempts_used || 1} / ${data.max_attempts || 3} 次尝试 · 即使关闭页面也会继续。`;
+            : (data.stage === "local_transcription" ? "长视频由 Mac mini 免费转写，可能需要数分钟；可以关闭页面。"
+              : `第 ${data.attempts_used || 1} / ${data.max_attempts || 3} 次尝试 · 即使关闭页面也会继续。`);
           await sleep(3000);
         }
       } finally {
@@ -282,7 +294,7 @@
     const heading = document.createElement("h3"); heading.className = "history-title"; heading.textContent = titleText;
     const top = document.createElement("div"); top.className = "history-topline";
     const id = document.createElement("span"); id.className = "history-id"; id.textContent = job.id;
-    const badge = document.createElement("span"); setStatus(badge, job.status === "completed" ? "已完成" : job.status === "failed" ? "失败" : job.status === "queued" ? "排队中" : "进行中", job.status === "queued" ? "running" : job.status);
+    const badge = document.createElement("span"); setStatus(badge, job.status === "completed" ? "已完成" : job.status === "failed" ? "失败" : job.status === "partial" ? "部分完成" : job.status === "queued" ? "排队中" : "进行中", job.status === "queued" ? "running" : job.status);
     const date = document.createElement("span"); date.className = "history-date"; date.textContent = fmtDate(job.created_at);
     top.append(id, badge, date);
     const sourceActions = document.createElement("div"); sourceActions.className = "source-actions history-source-actions";
@@ -293,6 +305,7 @@
     if (job.bundle?.download_path) actions.appendChild(downloadLink(job.bundle.download_path, "下载全部"));
     if (job.text?.download_path) actions.appendChild(downloadLink(job.text.download_path, `下载 ${(job.output_format || "txt").toUpperCase()}`));
     if (job.video?.download_path) actions.appendChild(downloadLink(job.video.download_path, "MP4"));
+    if (job.transcript?.download_path) actions.appendChild(downloadLink(job.transcript.download_path, "口播原文"));
     const detailBtn = document.createElement("button"); detailBtn.className = "text-button"; detailBtn.type = "button"; detailBtn.textContent = "详情";
     const del = document.createElement("button"); del.className = "danger-button"; del.type = "button"; del.textContent = "删除";
     if (job.status === "queued" || job.status === "running") { del.disabled = true; del.title = "任务完成后才可删除"; }
