@@ -315,11 +315,12 @@ def _cached_failed_analysis(input_url: str) -> dict[str, Any] | None:
     return None
 
 
-def _local_transcribe(job_id: str, video: Path) -> tuple[str, str]:
+def _local_transcribe(job_id: str, video: Path) -> tuple[str, str, int | None]:
     try:
         return transcribe_with_host(
             job_id, video, DATA_DIR, timeout_seconds=LOCAL_TRANSCRIPTION_TIMEOUT,
             model=LOCAL_TRANSCRIPTION_MODEL,
+            include_elapsed_ms=True,
         )
     except TranscriptionError as exc:
         raise AppError(
@@ -509,6 +510,7 @@ def serialize_job(job: dict[str, Any]) -> dict[str, Any]:
         "error_message": job.get("error_message"),
         "content": job.get("yuanbao_content") or "",
         "elapsed_ms": job.get("elapsed_ms"),
+        "transcription_elapsed_ms": job.get("transcription_elapsed_ms"),
         "yuanbao": {
             "preview_url": job.get("preview_url"),
         },

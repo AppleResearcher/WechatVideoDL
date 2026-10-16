@@ -91,7 +91,7 @@ def run_parse_job(
     max_attempts: int = 3,
     sleeper: Callable[[float], None] = time.sleep,
     thumbnailer: Callable[[Path, str, str | None, Path | None], Path | None] | None = None,
-    transcriber: Callable[[str, Path], tuple[str, str]] | None = None,
+    transcriber: Callable[[str, Path], tuple[str, str] | tuple[str, str, int | None]] | None = None,
     text_analyzer: Callable[[str, str | None], str] | None = None,
     cached_video_lookup: Callable[[str], Path | None] | None = None,
     cached_failed_analysis: Callable[[str], dict[str, Any] | None] | None = None,
@@ -170,9 +170,17 @@ def run_parse_job(
                                  error_message="元宝无法直接分析此视频，正在尝试本地语音转写")
                 if transcriber is not None and video_path is not None:
                     try:
-                        transcript_filename, transcript = transcriber(job_id, video_path)
+                        transcribed = transcriber(job_id, video_path)
+                        transcript_filename, transcript = transcribed[:2]
+                        elapsed = transcribed[2] if len(transcribed) > 2 else None
+                        timing = (
+                            {"transcription_elapsed_ms": elapsed}
+                            if isinstance(elapsed, int) and not isinstance(elapsed, bool)
+                            and 0 <= elapsed <= 86_400_000 else {}
+                        )
                         store.update_job(job_id, transcript_filename=transcript_filename,
-                                         stage="yuanbao_transcript", analysis_status="pending")
+                                         stage="yuanbao_transcript", analysis_status="pending",
+                                         **timing)
                         if text_analyzer is not None:
                             candidate = text_analyzer(transcript, prompt)
                             if not refusal_reason(candidate):
