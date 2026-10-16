@@ -38,6 +38,37 @@ class AppleUIDesignTests(unittest.TestCase):
         self.assertEqual(offsets, sorted(offsets))
         self.assertIn('data.transcript?.download_path', segment)
 
+    def test_history_title_metadata_source_and_prompt_disclosure(self):
+        js = self.source("static/app.js")
+        css = self.source("static/app.css")
+        self.assertIn("function conciseHistoryTitle(fullTitle)", js)
+        self.assertIn("const maxLength = 36", js)
+        self.assertIn('heading.title = titleText', js)
+        self.assertIn('detailRow("完整标题"', js)
+        self.assertIn('detailRow("原视频链接"', js)
+        self.assertIn('detailRow("本次 Prompt"', js)
+        self.assertIn('const meta = document.createElement("div"); meta.className = "history-meta"', js)
+        self.assertIn('"history-job-id"', js)
+        self.assertIn('id.setAttribute("aria-label", "任务 ID："', js)
+        self.assertIn('timeZone: "Asia/Shanghai"', js)
+        # Source and Prompt must not appear in the default visible card body.
+        card_start = js.index('  function historyCard(job, reload) {')
+        compact = js[card_start:js.index('    const actions = document.createElement("div");',card_start)]
+        self.assertNotIn("renderSourceActions", compact)
+        self.assertNotIn('history-prompt', compact)
+        self.assertIn('.history-detail-info', css)
+        self.assertIn('.history-info-row', css)
+
+    def test_source_links_copy_real_url_and_never_open_generic_wechat_scheme(self):
+        js = self.source("static/app.js")
+        self.assertIn("function copySourceLink", js)
+        self.assertIn("navigator.clipboard.writeText(url)", js)
+        self.assertIn('"浏览器打开"', js)
+        self.assertIn('"复制链接"', js)
+        self.assertIn('window.prompt("复制以下视频号链接', js)
+        self.assertNotIn('window.location.href = "weixin://"', js)
+        self.assertIn('["http:", "https:"]', js)
+
     def test_mobile_safe_area_controls_and_contrast(self):
         css = self.source("static/app.css")
         self.assertIn('@media (max-width:640px)', css)
