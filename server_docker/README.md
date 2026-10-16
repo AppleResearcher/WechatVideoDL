@@ -427,6 +427,35 @@ python3 scripts/setup_host_transcriber.py   --data-dir ./data --python /path/to/
 **运行限制**：当前本地 worker 默认 `base` 模型，依赖 Mac Metal/MPS 及本地可用模型；
 宿主机转写长视频可能耗时数分钟到几十分钟，且模型转写可能出现错字，须核对关键原话。
 AI 分析步骤仍会把**转写文本发送给腾讯元宝**，因此不是全程离线。
+
+**SenseVoice INT8 中文转写（可选、默认不开启）**：经同一条 24 分钟视频对照，
+本机 SenseVoice 在正确识别部分中文口播术语、标点、分段及速度方面明显优于 Whisper `base`。
+此路线用 sherpa-onnx 的**隔离 Python 环境和预先缓存的量化模型**运行，
+不下载模型、不开放网络端口，不要求 AgentDock 连接器在线。
+分段采用约 20 秒窗口、1 秒重叠，保存带时间戳的未经 AI 改写的原始文本。
+质量状态为未人工核对（`unverified`），不能保证全量转写完全正确。
+
+生产环境首次启用时应先验证宿主机中的隔离依赖和模型，再安装
+`--model sensevoice` 的独立 LaunchAgent，并把私有 `.env` 中
+`LOCAL_TRANSCRIPTION_MODEL` 改为 `sensevoice`。在这之前默认仍为 `base`。
+安装示例（以下路径全部是占位符，不是真实设备路径）：
+
+```bash
+python3 scripts/setup_host_transcriber.py \
+  --data-dir ./data --python /path/to/whisper-python \
+  --model sensevoice \
+  --sensevoice-python /private/sensevoice-venv/bin/python \
+  --sensevoice-model-dir /private/sensevoice-model \
+  --fallback-base
+# 上一条无 --install 为预演；检查通过后在原命令末尾加 --install。
+# 必须先确认宿主 worker 心跳、模型可用和真实样例输出，再切换 App 的 .env。
+```
+
+如 SenseVoice 异常且显式设置了 `--fallback-base`，宿主工作进程会退回
+旧 Whisper `base` 转写；不会自动修改 NPM、其他 Docker 容器或用户历史记录。
+任务执行的临时 FLAC 音频和中间识别片段位于受限临时目录，成功或失败后清理。
+**用户上传的视频在本地被转写，而转写后的文字仍按用户原有 Prompt 交给元宝分析。**
+
 生产任务进程或 Mac 重启时，和现有异步队列一样不承诺自动续跑；已存储的独立成果不会被故意删除。
 宿主机 worker 私有目录文件权限为 0600/0700，日志不会记录完整转写文本或登录 Cookie。
 
