@@ -132,10 +132,10 @@
       retryNotice.textContent = (data.retry_errors || []).length
         ? `任务曾遇到 ${data.retry_errors.length} 次临时错误，后台已自动恢复。` : "";
       downloadLinks.replaceChildren();
-      if (data.bundle?.download_path) downloadLinks.appendChild(downloadLink(data.bundle.download_path, "下载全部"));
-      if (data.text?.download_path) downloadLinks.appendChild(downloadLink(data.text.download_path, `下载 ${(data.output_format || "txt").toUpperCase()}`));
-      if (data.video?.download_path) downloadLinks.appendChild(downloadLink(data.video.download_path, "下载 MP4"));
-      if (data.transcript?.download_path) downloadLinks.appendChild(downloadLink(data.transcript.download_path, "下载完整口播"));
+      if (data.bundle?.download_path) downloadLinks.appendChild(downloadLink(data.bundle.download_path, "ALL", "all"));
+      if (data.text?.download_path) downloadLinks.appendChild(downloadLink(data.text.download_path, "AI解析", "analysis"));
+      if (data.transcript?.download_path) downloadLinks.appendChild(downloadLink(data.transcript.download_path, "旁白", "voice"));
+      if (data.video?.download_path) downloadLinks.appendChild(downloadLink(data.video.download_path, "MP4", "video"));
     }
 
     async function watchJob(jobId) {
@@ -238,8 +238,16 @@
     $("copy-content")?.addEventListener("click", async () => { if (analysisContent.textContent) await navigator.clipboard.writeText(analysisContent.textContent); });
   }
 
-  function downloadLink(path, label) {
-    const a = document.createElement("a"); a.className = "download-pill"; a.href = path; a.textContent = label; return a;
+  function downloadLink(path, label, kind = "") {
+    const a = document.createElement("a");
+    a.className = `download-pill${kind ? ` action-${kind}` : ""}`;
+    a.href = path;
+    a.textContent = label;
+    if (kind === "all") a.title = "下载当前任务的全部文件";
+    if (kind === "analysis") a.title = "下载 AI 解析结果";
+    if (kind === "voice") a.title = "下载原始旁白逐字稿（未经 AI 改写）";
+    if (kind === "video") a.title = "下载 MP4 视频";
+    return a;
   }
 
   function sourceLink(url, label = "打开原链接") {
@@ -298,7 +306,7 @@
       const img = document.createElement("img"); img.className = "history-thumbnail"; img.src = job.thumbnail.download_path; img.alt = `${titleText} 缩略图`; visual.appendChild(img);
     } else {
       const placeholder = document.createElement("div"); placeholder.className = "history-thumbnail-placeholder";
-      placeholder.textContent = job.download_requested === false ? "MD Only" : "No Cover";
+      placeholder.textContent = job.download_requested === false ? "No VIDEO" : "No Cover";
       visual.appendChild(placeholder);
     }
     const main = document.createElement("div"); main.className = "history-main";
@@ -319,17 +327,28 @@
     renderSourceActions(sourceActions, job.source_url || job.input_url || "");
     const prompt = document.createElement("p"); prompt.className = "history-prompt"; prompt.textContent = job.prompt || "未设置 Prompt";
     main.append(heading, top, sourceActions, prompt);
-    const actions = document.createElement("div"); actions.className = "history-actions";
-    if (job.bundle?.download_path) actions.appendChild(downloadLink(job.bundle.download_path, "下载全部"));
-    if (job.text?.download_path) actions.appendChild(downloadLink(job.text.download_path, `下载 ${(job.output_format || "txt").toUpperCase()}`));
-    if (job.video?.download_path) actions.appendChild(downloadLink(job.video.download_path, "MP4"));
-    if (job.transcript?.download_path) actions.appendChild(downloadLink(job.transcript.download_path, "口播原文"));
-    const detailBtn = document.createElement("button"); detailBtn.className = "text-button"; detailBtn.type = "button"; detailBtn.textContent = "详情";
+    const actions = document.createElement("div"); actions.className = "history-actions"; actions.setAttribute("role", "group"); actions.setAttribute("aria-label", "任务操作");
+    // Preserve the user's exact visual and keyboard order. Unavailable
+    // files are skipped rather than turning into broken download links.
+    if (job.bundle?.download_path) actions.appendChild(downloadLink(job.bundle.download_path, "ALL", "all"));
+    if (job.text?.download_path) actions.appendChild(downloadLink(job.text.download_path, "AI解析", "analysis"));
+    if (job.transcript?.download_path) actions.appendChild(downloadLink(job.transcript.download_path, "旁白", "voice"));
+    if (job.video?.download_path) actions.appendChild(downloadLink(job.video.download_path, "MP4", "video"));
+    const detailBtn = document.createElement("button"); detailBtn.className = "text-button history-detail-button"; detailBtn.type = "button"; detailBtn.textContent = "详情";
     const del = document.createElement("button"); del.className = "danger-button"; del.type = "button"; del.textContent = "删除";
     if (job.status === "queued" || job.status === "running") { del.disabled = true; del.title = "任务完成后才可删除"; }
     actions.append(detailBtn, del); card.append(visual, main, actions);
-    const detail = document.createElement("div"); detail.className = "history-detail hidden"; const pre = document.createElement("pre"); detail.appendChild(pre); card.appendChild(detail);
-    detailBtn.addEventListener("click", async () => { if (!detail.classList.contains("hidden")) { detail.classList.add("hidden"); return; } try { const data = await safeFetch(routePath(`api/history/${encodeURIComponent(job.id)}`)); pre.textContent = data.job.content || data.job.error_message || "没有文本内容"; detail.classList.remove("hidden"); } catch (e) { pre.textContent = e.message; detail.classList.remove("hidden"); } });
+    const detail = document.createElement("div"); detail.id = `history-detail-${job.id}`; detail.className = "history-detail hidden";
+    detailBtn.setAttribute("aria-controls", detail.id); detailBtn.setAttribute("aria-expanded", "false");
+    const pre = document.createElement("pre"); detail.appendChild(pre); card.appendChild(detail);
+    detailBtn.addEventListener("click", async () => {
+      if (!detail.classList.contains("hidden")) { detail.classList.add("hidden"); detailBtn.setAttribute("aria-expanded", "false"); return; }
+      try {
+        const data = await safeFetch(routePath(`api/history/${encodeURIComponent(job.id)}`));
+        pre.textContent = data.job.content || data.job.error_message || "没有文本内容";
+      } catch (e) { pre.textContent = e.message; }
+      detail.classList.remove("hidden"); detailBtn.setAttribute("aria-expanded", "true");
+    });
     del.addEventListener("click", async () => { if (!window.confirm(`确定删除《${titleText}》及其关联文件吗？此操作不可恢复。`)) return; del.disabled = true; try { await safeFetch(routePath(`api/history/${encodeURIComponent(job.id)}`), { method: "DELETE" }); await reload(); } catch (e) { window.alert(e.message); del.disabled = false; } });
     return card;
   }
