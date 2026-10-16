@@ -184,6 +184,44 @@ class HybridVoiceTests(unittest.TestCase):
         finally:
             thread.join(timeout=5)
 
+    def test_queue_exposes_real_worker_timing_and_accepts_legacy_missing(self):
+        from server_docker.transcription_queue import _atomic_json
+        from server_docker.transcription_queue import transcribe_with_host
+        queue = self.data / "transcription_queue"
+        video = self.data / "downloads/source.mp4"
+        video.write_bytes(b"file")
+        _atomic_json(queue/"worker.status.json", {"ready": True, "at": time.time(), "model": "sensevoice"})
+        for ident, seconds, expected in [
+            ("wxv_000144", 34.5, 34500),
+            ("wxv_000145", None, None),
+            ("wxv_000146", -12, None),
+            ("wxv_000147", float("nan"), None),
+        ]:
+            def runner():
+                req = queue / f"{ident}.request.json"
+                deadline = time.monotonic()+3
+                while not req.exists() and time.monotonic() < deadline:
+                    time.sleep(.01)
+                self.assertTrue(req.exists())
+                name = f"{ident}.transcript.txt"
+                (self.data / "downloads" / name).write_text(
+                    "完整口播转写结果，真实中文视频内容能够顺利保存。", encoding="utf8")
+                response = {"ok": True, "job_id": ident, "transcript_filename": name}
+                if seconds is not None:
+                    response["elapsed_seconds"] = seconds
+                _atomic_json(queue / f"{ident}.result.json", response)
+            thread = threading.Thread(target=runner)
+            thread.start()
+            try:
+                name, contents, ms = transcribe_with_host(
+                    ident, video, self.data, poll_seconds=.02,
+                    timeout_seconds=4, include_elapsed_ms=True)
+                self.assertEqual(ms, expected)
+                self.assertEqual(name, f"{ident}.transcript.txt")
+                self.assertTrue(contents)
+            finally:
+                thread.join(timeout=5)
+
     def test_worker_offline_fails_fast_without_writing_request(self):
         video=self.data/"downloads"/"clip.mp4";video.write_bytes(b"data")
         with self.assertRaises(TranscriptionError) as e:
@@ -279,6 +317,21 @@ class HybridRunnerTests(unittest.TestCase):
         self.assertEqual(self.downloads_called,[])
         self.assertTrue((self.downloads/row["video_filename"]).exists())
         self.assertEqual(cache.read_bytes(),b"original")
+    def test_transcription_time_persisted_separately_from_task_elapsed(self):
+        def fake_asr(job_id, video_path):
+            transcript_name = f"{job_id}.transcript.txt"
+            (self.downloads / transcript_name).write_text(
+                "这是一段未经人工润色的长视频口播文字，完整保留了识别文字。", encoding="utf8")
+            return transcript_name, "真实口播全文，包含重要细节和视频观点。", 34500
+        result = self.runner(
+            transcriber=fake_asr,
+            text_analyzer=lambda text, goal: "整理后的AI文字内容，保留主要事实和观点且具有完整结构。" * 3,
+        )
+        self.assertEqual(result["status"], "completed")
+        self.assertEqual(result["transcription_elapsed_ms"], 34500)
+        self.assertIsNotNone(result["elapsed_ms"])
+        self.assertNotEqual(result["elapsed_ms"], 34500)
+
     def test_failed_transcription_preserves_video(self):
         def fail(jid,path):raise RuntimeError("failure")
         row=self.runner(transcriber=fail,text_analyzer=lambda *_:"unused")

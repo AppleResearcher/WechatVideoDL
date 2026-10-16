@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import math
 import os
 import re
 import time
@@ -25,7 +26,8 @@ def _atomic_json(path: Path, obj: dict) -> None:
 def transcribe_with_host(
     job_id: str, video: Path, data_dir: Path, *, timeout_seconds: int = 3600,
     poll_seconds: float = 2, model: str = "base",
-) -> tuple[str, str]:
+    include_elapsed_ms: bool = False,
+) -> tuple[str, str] | tuple[str, str, int | None]:
     if not re.fullmatch(r"wxv_\d{6}", job_id):
         raise TranscriptionError("INVALID_JOB_ID")
     data_dir = Path(data_dir).resolve()
@@ -67,6 +69,18 @@ def transcribe_with_host(
             text = path.read_text("utf-8").strip()
             if len(text) < 20:
                 raise TranscriptionError("TRANSCRIPT_EMPTY")
+            if include_elapsed_ms:
+                # Existing workers may omit elapsed_seconds. Missing or
+                # invalid timing never turns successful ASR into a failure.
+                elapsed_seconds = data.get("elapsed_seconds")
+                if (isinstance(elapsed_seconds, (float, int))
+                        and not isinstance(elapsed_seconds, bool)
+                        and math.isfinite(elapsed_seconds)
+                        and 0 <= elapsed_seconds <= 86400):
+                    elapsed_ms = round(elapsed_seconds * 1000)
+                else:
+                    elapsed_ms = None
+                return text_file, text, elapsed_ms
             return text_file, text
         time.sleep(max(0.2, poll_seconds))
     raise TranscriptionError("LOCAL_TRANSCRIPTION_TIMEOUT")

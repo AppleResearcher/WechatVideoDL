@@ -50,6 +50,13 @@
     try { return new Intl.DateTimeFormat("zh-CN", { dateStyle: "medium", timeStyle: "short" }).format(new Date(value)); }
     catch (_) { return value; }
   }
+  function fmtTranscriptionDuration(value) {
+    if (typeof value !== "number" || !Number.isFinite(value) || value < 0) return "";
+    const seconds = value / 1000;
+    if (seconds < 60) return `${seconds.toFixed(1)} 秒`;
+    const whole = Math.round(seconds);
+    return `${Math.floor(whole / 60)} 分 ${String(whole % 60).padStart(2, "0")} 秒`;
+  }
   function setStatus(el, text, kind = "idle") {
     if (!el) return; el.textContent = text; el.className = `status-badge ${kind}`;
   }
@@ -113,6 +120,10 @@
       $("result-id").textContent = data.id || "—";
       $("result-attempts").textContent = `${data.attempts_used || 1} / ${data.max_attempts || 3}`;
       $("result-format").textContent = (data.output_format || "txt").toUpperCase();
+      const transcriptionTime = fmtTranscriptionDuration(data.transcription_elapsed_ms);
+      const timingElement = $("result-transcription-time");
+      timingElement.classList.toggle("hidden", !transcriptionTime);
+      timingElement.textContent = transcriptionTime ? `本地转写耗时：${transcriptionTime}` : "";
       analysisContent.textContent = data.analysis_status === "unavailable"
         ? (data.error_message || "元宝无法完成视频内容分析，请查看已保存的视频或口播文件。")
         : (data.content || "");
@@ -297,6 +308,13 @@
     const badge = document.createElement("span"); setStatus(badge, job.status === "completed" ? "已完成" : job.status === "failed" ? "失败" : job.status === "partial" ? "部分完成" : job.status === "queued" ? "排队中" : "进行中", job.status === "queued" ? "running" : job.status);
     const date = document.createElement("span"); date.className = "history-date"; date.textContent = fmtDate(job.created_at);
     top.append(id, badge, date);
+    const transcriptionTime = fmtTranscriptionDuration(job.transcription_elapsed_ms);
+    if (transcriptionTime) {
+      const timing = document.createElement("span"); timing.className = "history-date";
+      timing.textContent = `本地转写耗时：${transcriptionTime}`;
+      timing.title = "含本地音轨提取、语音识别和逐字稿保存；不包含元宝分析或视频下载";
+      top.appendChild(timing);
+    }
     const sourceActions = document.createElement("div"); sourceActions.className = "source-actions history-source-actions";
     renderSourceActions(sourceActions, job.source_url || job.input_url || "");
     const prompt = document.createElement("p"); prompt.className = "history-prompt"; prompt.textContent = job.prompt || "未设置 Prompt";

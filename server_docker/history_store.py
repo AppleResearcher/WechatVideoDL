@@ -36,6 +36,7 @@ JOB_COLUMNS = {
     "video_bytes",
     "elapsed_ms",
     "transcript_filename",
+    "transcription_elapsed_ms",
     "analysis_source",
     "analysis_status",
     "stage",
@@ -91,6 +92,7 @@ class HistoryStore:
                     video_bytes INTEGER,
                     elapsed_ms INTEGER,
                     transcript_filename TEXT,
+                    transcription_elapsed_ms INTEGER,
                     analysis_source TEXT,
                     analysis_status TEXT,
                     stage TEXT
@@ -104,6 +106,8 @@ class HistoryStore:
             ):
                 if column not in existing:
                     conn.execute(f"ALTER TABLE jobs ADD COLUMN {column} TEXT")
+            if "transcription_elapsed_ms" not in existing:
+                conn.execute("ALTER TABLE jobs ADD COLUMN transcription_elapsed_ms INTEGER")
             conn.execute("CREATE INDEX IF NOT EXISTS idx_jobs_created_at ON jobs(created_at DESC)")
 
     def _reconcile_running_jobs(self) -> None:
