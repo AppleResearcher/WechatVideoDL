@@ -45,6 +45,9 @@ FUNCTION_FILE = Path(os.environ.get("BROWSERLESS_FUNCTION_FILE", APP_DIR / "brow
 TEXT_FUNCTION_FILE = APP_DIR / "browserless_text_function.js"
 LOCAL_TRANSCRIPTION_ENABLED = os.environ.get("LOCAL_TRANSCRIPTION_ENABLED", "false").strip().lower() in {"1", "true", "yes"}
 LOCAL_TRANSCRIPTION_TIMEOUT = int(os.environ.get("LOCAL_TRANSCRIPTION_TIMEOUT", "4500"))
+LOCAL_TRANSCRIPTION_MODEL = os.environ.get("LOCAL_TRANSCRIPTION_MODEL", "base").strip().lower()
+if LOCAL_TRANSCRIPTION_MODEL not in {"base", "small", "medium", "turbo", "sensevoice"}:
+    LOCAL_TRANSCRIPTION_MODEL = "base"
 SEQUENCE_FILE = DATA_DIR / "sequence.txt"
 
 BROWSERLESS_URL = os.environ.get("BROWSERLESS_URL", "http://browserless:3000").rstrip("/")
@@ -316,6 +319,7 @@ def _local_transcribe(job_id: str, video: Path) -> tuple[str, str]:
     try:
         return transcribe_with_host(
             job_id, video, DATA_DIR, timeout_seconds=LOCAL_TRANSCRIPTION_TIMEOUT,
+            model=LOCAL_TRANSCRIPTION_MODEL,
         )
     except TranscriptionError as exc:
         raise AppError(

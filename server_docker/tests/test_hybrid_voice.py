@@ -5,6 +5,7 @@ import threading
 import time
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 from server_docker.content_quality import refusal_reason, valid_analysis
 from server_docker.transcription_queue import transcribe_with_host, TranscriptionError
@@ -35,6 +36,92 @@ class HybridVoiceTests(unittest.TestCase):
             "作者提到元宝可能显示'未找到相关视频'，但后来他又详细介绍了"
             + "内容分析的七种方法。" * 25
         ))
+
+    def test_sensevoice_launchd_config_is_explicit_and_opt_in(self):
+        from server_docker.scripts.setup_host_transcriber import make_plist
+        from server_docker.scripts.host_transcription_worker import default_transcriber
+        fake_python = self.data / "python"
+        fake_worker = self.data / "worker.py"
+        model = self.data / "model"
+        model.mkdir()
+        (model / "model.int8.onnx").write_bytes(b"mock")
+        (model / "tokens.txt").write_text("mock", encoding="utf8")
+        fake_python.write_text("mock", encoding="utf8")
+        with self.assertRaises(ValueError):
+            make_plist(fake_python, fake_worker, self.data, model="sensevoice")
+        config = make_plist(
+            fake_python, fake_worker, self.data,
+            model="sensevoice", sensevoice_python=fake_python,
+            sensevoice_model_dir=model, fallback_base=True,
+        )
+        self.assertEqual(config["ProgramArguments"][-1], "sensevoice")
+        env = config["EnvironmentVariables"]
+        self.assertEqual(env["LOCAL_ASR_FALLBACK_BASE"], "true")
+        self.assertEqual(env["LOCAL_ASR_SENSEVOICE_PYTHON"], str(fake_python))
+        self.assertEqual(env["LOCAL_ASR_SENSEVOICE_MODEL_DIR"], str(model))
+        self.assertNotIn("TOKEN", env)
+        with patch.dict(os.environ, {"LOCAL_ASR_FALLBACK_BASE": "false"}):
+            with patch(
+                "server_docker.scripts.host_transcription_worker.sensevoice_transcriber",
+                side_effect=RuntimeError("SENSEVOICE_TEST_FAILURE"),
+            ):
+                with self.assertRaisesRegex(RuntimeError, "SENSEVOICE_TEST_FAILURE"):
+                    default_transcriber(self.data / "downloads" / "test.mp4", "sensevoice")
+
+    def test_sensevoice_job_uses_isolated_staging_and_cleans_up(self):
+        from server_docker.scripts.host_transcription_worker import sensevoice_transcriber
+        from unittest.mock import Mock
+        mp4 = self.data / "downloads" / "clip.mp4"
+        mp4.write_bytes(b"immutable source")
+        fakepython = self.data / "python"
+        fakepython.write_bytes(b"fake python")
+        fakepython.chmod(0o700)
+        model = self.data / "model"
+        model.mkdir()
+        (model / "model.int8.onnx").write_bytes(b"model")
+        (model / "tokens.txt").write_bytes(b"token symbols")
+        before = mp4.read_bytes()
+
+        def fake_ffmpeg(args, **_kwargs):
+            dest = Path(args[-1])
+            dest.write_bytes(b"a" * 4096)
+            return Mock(returncode=0)
+
+        def fake_popen(argv, **_kwargs):
+            class FakeWorker:
+                returncode = 0
+                def communicate(self, data, timeout):
+                    payload = json.loads(data)
+                    out = Path(payload["output_dir"])
+                    (out / "transcript.sensevoice.txt").write_text(
+                        "[00:00:00.000 - 00:00:10.000] 这是一条用于验证离线语音识别的完整中文测试句子。",
+                        encoding="utf8")
+                    (out / "transcript.sensevoice.manifest.json").write_text(
+                        json.dumps({"parts":1, "model":"sensevoice-int8-2024"}),encoding="utf8")
+                    return json.dumps({"ok":True,"parts":1}), ""
+            self.assertTrue(Path(argv[0]).is_file())
+            self.assertTrue(Path(argv[1]).is_file())
+            return FakeWorker()
+        with patch.dict(os.environ, {
+            "LOCAL_ASR_SENSEVOICE_PYTHON": str(fakepython),
+            "LOCAL_ASR_SENSEVOICE_MODEL_DIR": str(model),
+        }):
+            with patch("server_docker.scripts.host_transcription_worker.subprocess.run", side_effect=fake_ffmpeg):
+                with patch("server_docker.scripts.host_transcription_worker.subprocess.Popen", side_effect=fake_popen):
+                    transcript = sensevoice_transcriber(mp4)
+        self.assertIn("离线语音识别", transcript)
+        self.assertEqual(mp4.read_bytes(), before)
+        self.assertEqual(list((self.data / "transcription_queue").iterdir()), [])
+
+    def test_app_dispatches_configured_local_asr_model(self):
+        from server_docker import app as appmod
+        with patch.object(appmod, "LOCAL_TRANSCRIPTION_MODEL", "sensevoice"):
+            with patch.object(appmod, "transcribe_with_host",
+                              return_value=("test.transcript.txt", "中文原话")) as asr:
+                name, text = appmod._local_transcribe("wxv_999999", self.data / "downloads" / "clip.mp4")
+        self.assertEqual(name, "test.transcript.txt")
+        self.assertEqual(text, "中文原话")
+        self.assertEqual(asr.call_args.kwargs.get("model"), "sensevoice")
 
     def test_launchd_config_keeps_worker_local_and_private(self):
         from server_docker.scripts.setup_host_transcriber import make_plist

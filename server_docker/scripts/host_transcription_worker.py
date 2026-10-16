@@ -10,7 +10,10 @@ import argparse
 import json
 import os
 import re
+import signal
 import stat
+import subprocess
+import tempfile
 import sys
 import threading
 import time
@@ -46,7 +49,98 @@ def resolve_video(download_dir: Path, filename: str) -> Path:
     return resolved
 
 
+def sensevoice_transcriber(video: Path) -> str:
+    """Use offline SenseVoice in an isolated interpreter; never mutate the video.
+
+    Source files, session state, and credentials are never read by the engine.
+    The staging folder (including extracted audio and checkpoints) disappears
+    whether the process succeeds, times out, or fails.
+    """
+    python_path = os.environ.get("LOCAL_ASR_SENSEVOICE_PYTHON", "").strip()
+    model_root = os.environ.get("LOCAL_ASR_SENSEVOICE_MODEL_DIR", "").strip()
+    python = Path(python_path).expanduser() if python_path else None
+    model = Path(model_root).expanduser() if model_root else None
+    if (python is None or not python.is_file() or not os.access(python, os.X_OK)
+            or model is None or model.is_symlink() or not model.is_dir()
+            or not (model / "model.int8.onnx").is_file()
+            or not (model / "tokens.txt").is_file()):
+        raise RuntimeError("SENSEVOICE_NOT_CONFIGURED")
+    engine = Path(__file__).with_name("sensevoice_engine.py")
+    if not engine.is_file() or engine.is_symlink():
+        raise RuntimeError("SENSEVOICE_ENGINE_MISSING")
+    staging_root = video.parent.parent / "transcription_queue"
+    if staging_root.is_symlink() or not staging_root.is_dir():
+        raise RuntimeError("SENSEVOICE_STAGING_UNAVAILABLE")
+    with tempfile.TemporaryDirectory(prefix=".sensevoice-", dir=staging_root) as directory:
+        staging = Path(directory)
+        audio = staging / "source.flac"
+        converted = subprocess.run(
+            ["ffmpeg", "-nostdin", "-hide_banner", "-loglevel", "error", "-n",
+             "-i", str(video), "-vn", "-ar", "16000", "-ac", "1",
+             "-c:a", "flac", str(audio)],
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=300,
+        )
+        if converted.returncode or not audio.is_file() or audio.stat().st_size < 4096:
+            raise RuntimeError("SENSEVOICE_AUDIO_EXTRACT_FAILED")
+        os.chmod(audio, 0o600)
+        result_dir = staging / "output"
+        result_dir.mkdir(mode=0o700)
+        runner = subprocess.Popen(
+            [str(python), str(engine)],
+            stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL, text=True, start_new_session=True,
+        )
+        try:
+            stdout, _ = runner.communicate(
+                json.dumps({
+                    "input": str(audio),
+                    "output_dir": str(result_dir),
+                    "model_dir": str(model),
+                }), timeout=3600,
+            )
+        except subprocess.TimeoutExpired:
+            try:
+                os.killpg(runner.pid, signal.SIGKILL)
+            except ProcessLookupError:
+                pass
+            runner.communicate()
+            raise RuntimeError("SENSEVOICE_TIMEOUT") from None
+        if runner.returncode:
+            raise RuntimeError("SENSEVOICE_FAILED")
+        try:
+            response = json.loads(stdout.strip())
+            manifest = json.loads(
+                (result_dir / "transcript.sensevoice.manifest.json").read_text("utf8"))
+        except (OSError, TypeError, ValueError, KeyError):
+            raise RuntimeError("SENSEVOICE_RESULT_INVALID") from None
+        if (not response.get("ok") or response.get("parts", 0) < 1
+                or manifest.get("parts") != response["parts"]
+                or manifest.get("model") != "sensevoice-int8-2024"):
+            raise RuntimeError("SENSEVOICE_RESULT_INVALID")
+        transcript = result_dir / "transcript.sensevoice.txt"
+        if not transcript.is_file() or transcript.is_symlink():
+            raise RuntimeError("SENSEVOICE_RESULT_INVALID")
+        text = transcript.read_text("utf8").strip()
+        if len(text) < 20:
+            raise RuntimeError("SENSEVOICE_EMPTY")
+        # A few uncertain segments may still be useful for the user's
+        # original transcript. Return unmodified recognized content here;
+        # quality flags can be surfaced separately in a subsequent version.
+        return text
+
+
 def default_transcriber(video: Path, model_name: str) -> str:
+    if model_name == "sensevoice":
+        try:
+            return sensevoice_transcriber(video)
+        except Exception:
+            # Explicit opt-in. Do not silently use the slow Whisper fallback
+            # when offline model paths or media decoders are misconfigured.
+            if os.environ.get("LOCAL_ASR_FALLBACK_BASE", "false").strip().lower() not in {
+                "true", "yes", "1",
+            }:
+                raise
+            model_name = "base"
     import torch
     import whisper
     torch.set_num_threads(4)
@@ -77,7 +171,7 @@ def process_request(data_dir: Path, payload: dict, transcribe: Callable[[Path, s
         raise ValueError("INVALID_JOB_ID")
     video = resolve_video(data_dir / "downloads", str(payload.get("video_filename") or ""))
     model = str(payload.get("model") or "base")
-    if model not in {"base", "small", "medium", "turbo"}:
+    if model not in {"base", "small", "medium", "turbo", "sensevoice"}:
         raise ValueError("MODEL_NOT_ALLOWED")
     start = time.monotonic()
     text = transcribe(video, model)
@@ -127,6 +221,10 @@ def run_once(data_dir: Path, transcribe: Callable[[Path, str], str] = default_tr
                 "INVALID_MEDIA", "INVALID_JOB_ID", "JOB_ID_MISMATCH",
                 "MODEL_NOT_ALLOWED", "UNKNOWN_WHISPER_MODEL",
                 "WHISPER_MODEL_NOT_CACHED", "TRANSCRIPT_EMPTY",
+                "SENSEVOICE_NOT_CONFIGURED", "SENSEVOICE_ENGINE_MISSING",
+                "SENSEVOICE_AUDIO_EXTRACT_FAILED", "SENSEVOICE_STAGING_UNAVAILABLE",
+                "SENSEVOICE_FAILED", "SENSEVOICE_TIMEOUT",
+                "SENSEVOICE_RESULT_INVALID", "SENSEVOICE_EMPTY",
             } else "TRANSCRIPTION_FAILED"
             result = {"ok": False, "job_id": jid, "error_code": code}
         atomic_json(result_file, result)
@@ -139,7 +237,7 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--data-dir", required=True)
     parser.add_argument("--once", action="store_true")
-    parser.add_argument("--model", choices=["base","small","medium","turbo"], default="base")
+    parser.add_argument("--model", choices=["base","small","medium","turbo","sensevoice"], default="base")
     args = parser.parse_args()
     data_dir = Path(args.data_dir).expanduser().resolve(strict=True)
     if not (data_dir / "downloads").is_dir():
