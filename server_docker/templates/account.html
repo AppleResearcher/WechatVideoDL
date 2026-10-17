@@ -14,8 +14,8 @@
   <form method="post" action="{{ url_for('account_password') }}" class="account-form">
     <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
     <label>当前密码<input name="current_password" type="password" required autocomplete="current-password"></label>
-    <label>新密码（至少 12 个字符）<input name="new_password" type="password" required minlength="12" maxlength="256" autocomplete="new-password"></label>
-    <label>再次输入新密码<input name="confirm_password" type="password" required minlength="12" maxlength="256" autocomplete="new-password"></label>
+    <label>新密码（至少 8 个字符）<input name="new_password" type="password" required minlength="8" maxlength="256" autocomplete="new-password"></label>
+    <label>再次输入新密码<input name="confirm_password" type="password" required minlength="8" maxlength="256" autocomplete="new-password"></label>
     <button class="primary-button full" type="submit">修改密码并重新登录</button>
   </form>
 </section>

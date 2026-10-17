@@ -14,7 +14,7 @@
   <form method="post" action="{{ url_for('admin_create_user') }}" class="account-form">
     <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
     <label>用户名<input name="username" required maxlength="32" pattern="[A-Za-z0-9][A-Za-z0-9._-]*" autocomplete="off" placeholder="英文字母、数字、点、下划线或连字符"></label>
-    <label>初始密码（至少 12 个字符）<input name="password" required type="password" minlength="12" maxlength="256" autocomplete="new-password"></label>
+    <label>初始密码（至少 8 个字符）<input name="password" required type="password" minlength="8" maxlength="256" autocomplete="new-password"></label>
     <label>角色<select name="role" class="select-input"><option value="member">普通用户（仅自己的历史与文件）</option><option value="admin">管理员（管理全部历史和用户）</option></select></label>
     <button class="primary-button full" type="submit">创建用户</button>
   </form>
@@ -30,8 +30,8 @@
     <div class="user-actions">
       <form method="post" action="{{ url_for('admin_reset_password', uid=user.id) }}">
         <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
-        <label>设置新密码<input name="password" type="password" required minlength="12" maxlength="256" autocomplete="new-password"></label>
-        <label>确认新密码<input name="confirm_password" type="password" required minlength="12" maxlength="256" autocomplete="new-password"></label>
+        <label>设置新密码<input name="password" type="password" required minlength="8" maxlength="256" autocomplete="new-password"></label>
+        <label>确认新密码<input name="confirm_password" type="password" required minlength="8" maxlength="256" autocomplete="new-password"></label>
         <button class="secondary-button" type="submit">重置密码</button>
       </form>
       {% if user.id != current_user().id %}
