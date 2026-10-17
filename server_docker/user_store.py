@@ -19,7 +19,7 @@ from typing import Any
 from werkzeug.security import check_password_hash, generate_password_hash
 
 USERNAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,31}$")
-STRONG_PASSWORD_LENGTH = 12
+MIN_PASSWORD_LENGTH = 8
 
 
 class UserError(ValueError):
@@ -118,7 +118,7 @@ class UserStore:
 
     @staticmethod
     def validate_new_password(password: str):
-        if not isinstance(password, str) or not STRONG_PASSWORD_LENGTH <= len(password) <= 256:
+        if not isinstance(password, str) or not MIN_PASSWORD_LENGTH <= len(password) <= 256:
             raise UserError("PASSWORD_LENGTH")
 
     def create_user(self, *, username: str, password: str, role: str = "member"):

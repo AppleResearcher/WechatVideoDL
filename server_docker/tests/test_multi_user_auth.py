@@ -253,6 +253,57 @@ class MultiUserSecurityTests(unittest.TestCase):
         with self.assertRaises(UserError):
             store.create_user(username="TESTUSER",password="password-12345")
 
+    def test_password_policy_accepts_eight_characters_and_symbols(self):
+        store=appmod.get_user_store()
+        # Eight characters is the new minimum; symbol choice has no restriction.
+        user=store.create_user(username="shortuser",password="abc#1234")
+        self.assertIsNotNone(store.authenticate("shortuser","abc#1234"))
+        store.set_password(user["id"],"zoom#1980")
+        self.assertIsNotNone(store.authenticate("shortuser","zoom#1980"))
+        for password in ("", "a#12345", "x"*257):
+            with self.subTest(length=len(password)):
+                with self.assertRaises(UserError) as check:
+                    store.validate_new_password(password)
+                self.assertEqual(str(check.exception),"PASSWORD_LENGTH")
+        # The former 12+ character passwords continue to work.
+        other=store.create_user(username="longuser",password="previously-valid-password")
+        self.assertIsNotNone(store.authenticate("longuser","previously-valid-password"))
+
+    def test_eight_character_password_works_in_all_three_account_flows(self):
+        self.assertEqual(self.signed_in(self.admin_client,"founder","initial-secure-password").status_code,302)
+        csrf=self.current_csrf(self.admin_client)
+        # 1. Administrator creates an account.
+        response=self.request(self.admin_client,"POST","/admin/users",data={
+            "csrf_token":csrf,"username":"shortuser","password":"zoom#1980","role":"member"})
+        self.assertEqual(response.status_code,200)
+        uid=appmod.get_user_store().get_user_by_name("shortuser")["id"]
+        self.assertEqual(self.signed_in(self.member_client,"shortuser","zoom#1980").status_code,302)
+        # 2. Administrator resets its password to the minimum length.
+        reset=self.request(self.admin_client,"POST",f"/admin/users/{uid}/password",data={
+            "csrf_token":csrf,"password":"ab#12345","confirm_password":"ab#12345"})
+        self.assertEqual(reset.status_code,200)
+        self.assertEqual(self.signed_in(self.member_client,"shortuser","ab#12345").status_code,302)
+        # 3. User changes their own password to a new eight-character one.
+        member_csrf=self.current_csrf(self.member_client)
+        changed=self.request(self.member_client,"POST","/account/password",data={
+            "csrf_token":member_csrf,"current_password":"ab#12345",
+            "new_password":"xy#12345","confirm_password":"xy#12345"})
+        self.assertEqual(changed.status_code,302)
+        self.assertEqual(self.signed_in(self.member_client,"shortuser","xy#12345").status_code,302)
+        # Seven-character input must still be rejected server-side.
+        invalid=self.request(self.admin_client,"POST","/admin/users",data={
+            "csrf_token":csrf,"username":"too_short","password":"x#12345","role":"member"})
+        self.assertEqual(invalid.status_code,400)
+        self.assertIn("至少需要 8 个字符",invalid.get_data(as_text=True))
+
+    def test_password_input_attributes_match_backend_policy(self):
+        self.assertEqual(self.signed_in(self.admin_client,"founder","initial-secure-password").status_code,302)
+        for path in ("/admin/users","/account"):
+            html=self.request(self.admin_client,"GET",path).get_data(as_text=True)
+            self.assertIn('minlength="8"',html)
+            self.assertIn("至少 8 个字符",html)
+            self.assertNotIn('minlength="12"',html)
+
     def test_form_and_basic_failed_login_attempts_are_throttled(self):
         self.request(self.admin_client,"GET","/login")
         csrf=self.current_csrf(self.admin_client)

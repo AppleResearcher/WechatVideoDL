@@ -800,14 +800,14 @@ def account_password():
     try:
         get_user_store().set_password(user["id"], new)
     except UserError:
-        return render_template("account.html", error="密码至少需要 12 个字符", message=None), 400
+        return render_template("account.html", error="密码至少需要 8 个字符", message=None), 400
     session.clear()
     return redirect(url_for("login"))
 
 
 def user_message(code: str) -> str:
     return {
-        "PASSWORD_LENGTH": "密码至少需要 12 个字符",
+        "PASSWORD_LENGTH": "密码至少需要 8 个字符",
         "USERNAME_INVALID": "用户名只能使用字母、数字、点、下划线或连字符，最长 32 字符",
         "USERNAME_TAKEN": "用户名已存在",
         "LAST_ADMIN": "必须保留至少一位启用状态的管理员",
