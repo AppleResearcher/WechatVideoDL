@@ -798,7 +798,10 @@ def account_password():
     if new != verify:
         return render_template("account.html", error="新密码两次输入不一致", message=None), 400
     try:
-        get_user_store().set_password(user["id"], new)
+        get_user_store().set_password(
+            user["id"], new,
+            actor_user_id=user["id"], current_password=old,
+        )
     except UserError:
         return render_template("account.html", error="密码至少需要 8 个字符", message=None), 400
     session.clear()
@@ -813,6 +816,11 @@ def user_message(code: str) -> str:
         "LAST_ADMIN": "必须保留至少一位启用状态的管理员",
         "ROLE_INVALID": "用户角色不正确",
         "USER_NOT_FOUND": "账号不存在",
+        "SUPERADMIN_PROTECTED": "gt 是受保护的超级管理员，其他管理员不能修改其密码、角色或状态",
+        "SUPERADMIN_RESERVED": "gt 为专属超级管理员账号，不能创建同名账号",
+        "PERMISSION_DENIED": "当前账号没有执行此操作的权限",
+        "CANNOT_EDIT_SELF": "不能在管理页面修改自己的权限或停用自己",
+        "CURRENT_PASSWORD_INVALID": "当前密码不正确",
     }.get(code, "操作未完成，请检查输入")
 
 
@@ -850,7 +858,10 @@ def admin_reset_password(uid):
     if request.form.get("password") != request.form.get("confirm_password"):
         return users_feedback(error="两次输入的新密码不一致", code=400)
     try:
-        get_user_store().set_password(uid, request.form.get("password", ""))
+        get_user_store().set_password(
+            uid, request.form.get("password", ""),
+            actor_user_id=current_user()["id"],
+        )
         return users_feedback(message="密码已重置，原有登录会话已失效")
     except UserError as exc:
         return users_feedback(error=user_message(str(exc)), code=400)
@@ -863,7 +874,9 @@ def admin_change_role(uid):
     if user["id"] == uid:
         return users_feedback(error="不能在此修改自己的管理员身份", code=400)
     try:
-        get_user_store().set_role(uid, request.form.get("role", ""))
+        get_user_store().set_role(
+            uid, request.form.get("role", ""), actor_user_id=user["id"]
+        )
         return users_feedback(message="用户权限已更新")
     except UserError as exc:
         return users_feedback(error=user_message(str(exc)), code=400)
@@ -875,7 +888,10 @@ def admin_set_active(uid):
     if current_user()["id"] == uid:
         return users_feedback(error="不能禁用自己的账号", code=400)
     try:
-        get_user_store().set_active(uid, request.form.get("active") == "1")
+        get_user_store().set_active(
+            uid, request.form.get("active") == "1",
+            actor_user_id=current_user()["id"],
+        )
         return users_feedback(message="账号状态已更新")
     except UserError as exc:
         return users_feedback(error=user_message(str(exc)), code=400)
