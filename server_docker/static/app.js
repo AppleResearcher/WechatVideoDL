@@ -27,7 +27,13 @@
   }
 
   async function safeFetch(url, options = {}) {
-    const response = await fetch(url, options);
+    const method = String(options.method || "GET").toUpperCase();
+    const headers = new Headers(options.headers || {});
+    if (!["GET", "HEAD", "OPTIONS"].includes(method)) {
+      const csrf = document.querySelector('meta[name="csrf-token"]')?.content;
+      if (csrf) headers.set("X-CSRF-Token", csrf);
+    }
+    const response = await fetch(url, {...options, headers});
     const contentType = (response.headers.get("content-type") || "").toLowerCase();
     const raw = await response.text();
     if (!contentType.includes("application/json")) {
@@ -398,6 +404,12 @@
     id.title = "任务 ID：" + job.id;
     id.setAttribute("aria-label", "任务 ID：" + job.id);
     meta.appendChild(id);
+    if (job.owner_username) {
+      const owner = document.createElement("span");
+      owner.className = "history-owner";
+      owner.textContent = "用户：" + job.owner_username;
+      meta.appendChild(owner);
+    }
     main.append(heading, meta);
     const actions = document.createElement("div"); actions.className = "history-actions"; actions.setAttribute("role", "group"); actions.setAttribute("aria-label", "任务操作");
     // Preserve the user's exact visual and keyboard order. Unavailable
