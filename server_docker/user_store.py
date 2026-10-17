@@ -1,7 +1,8 @@
 """Private multi-user identity and role store.
 
-The unique 'gt' account is the protected super administrator: the database
-retains role='admin' for compatibility, and marks it with is_superadmin=1.
+The initial owner is the unique protected super administrator.
+Identity is permanently bound to the database user ID (is_superadmin=1),
+never to a hard-coded username or the current environment setting.
 All account mutations require an authenticated actor at the store layer.
 """
 from __future__ import annotations
@@ -19,7 +20,6 @@ from werkzeug.security import check_password_hash, generate_password_hash
 
 USERNAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,31}$")
 MIN_PASSWORD_LENGTH = 8
-SUPERADMIN_USERNAME = "gt"
 
 
 class UserError(ValueError):
@@ -31,9 +31,19 @@ def now_iso() -> str:
 
 
 class UserStore:
-    def __init__(self, db_path: Path, *, seed_username: str, seed_password: str):
+    def __init__(
+        self, db_path: Path, *, seed_username: str, seed_password: str,
+        bootstrap_superadmin_username: str | None = None,
+    ):
         self.db_path = Path(db_path)
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
+        # Used only for first initialization or one-time migration of legacy
+        # databases with no protected owner. After that DB identity prevails.
+        self.bootstrap_superadmin_username = (
+            bootstrap_superadmin_username.strip()
+            if bootstrap_superadmin_username is not None
+            else seed_username.strip()
+        )
         self._initialize(seed_username, seed_password)
 
     def _connect(self):
@@ -68,32 +78,46 @@ class UserStore:
                 if conn.execute("SELECT count(*) FROM users").fetchone()[0] == 0:
                     if not username.strip() or not password:
                         raise UserError("ADMIN_BOOTSTRAP_CREDENTIALS_REQUIRED")
+                    if (self.bootstrap_superadmin_username
+                            and self.bootstrap_superadmin_username.casefold()
+                            != username.strip().casefold()):
+                        raise UserError("SUPERADMIN_BOOTSTRAP_MISMATCH")
                     stamp = now_iso()
                     conn.execute(
                         """INSERT INTO users(
-                           id,username,password_hash,role,active,session_version,created_at,updated_at)
-                           VALUES(?,?,?,'admin',1,0,?,?)""",
+                           id,username,password_hash,role,active,is_superadmin,
+                           session_version,created_at,updated_at)
+                           VALUES(?,?,?,'admin',1,1,0,?,?)""",
                         (uuid.uuid4().hex, username.strip(),
                          generate_password_hash(password, method="scrypt"), stamp, stamp),
                     )
 
-                # The gt identity already exists on the production system.
-                # Bind protection to its durable user ID, not to a screen label.
-                gt = conn.execute(
-                    "SELECT id,role,active,is_superadmin FROM users "
-                    "WHERE username=? COLLATE NOCASE",
-                    (SUPERADMIN_USERNAME,),
-                ).fetchone()
-                other = conn.execute(
-                    "SELECT id FROM users WHERE is_superadmin=1"
+                marked = conn.execute(
+                    "SELECT id,role,active FROM users WHERE is_superadmin=1"
                 ).fetchall()
-                if other and (gt is None or any(item["id"] != gt["id"] for item in other)):
+                if len(marked) > 1:
                     raise UserError("SUPERADMIN_CONFLICT")
-                if gt and (gt["role"] != "admin" or not gt["active"] or not gt["is_superadmin"]):
+                if marked:
+                    # Once locked, changing the bootstrap env variable cannot
+                    # reassign, replace, or create another protected account.
+                    if marked[0]["role"] != "admin" or not marked[0]["active"]:
+                        raise UserError("SUPERADMIN_CONFLICT")
+                else:
+                    # Upgrade from an older multi-user database only once.
+                    # Never silently choose the newest/oldest administrator:
+                    # an explicit existing enabled admin must match the
+                    # bootstrap identity, otherwise refuse to start.
+                    owner = conn.execute(
+                        "SELECT id,role,active FROM users "
+                        "WHERE username=? COLLATE NOCASE",
+                        (self.bootstrap_superadmin_username,),
+                    ).fetchone()
+                    if not owner or owner["role"] != "admin" or not owner["active"]:
+                        raise UserError("SUPERADMIN_BOOTSTRAP_REQUIRED")
                     conn.execute(
-                        """UPDATE users SET role='admin',active=1,is_superadmin=1,
+                        """UPDATE users SET is_superadmin=1,
                            session_version=session_version+1,updated_at=? WHERE id=?""",
-                        (now_iso(), gt["id"]),
+                        (now_iso(), owner["id"]),
                     )
                 conn.execute(
                     "CREATE UNIQUE INDEX IF NOT EXISTS idx_users_single_superadmin "
@@ -178,10 +202,6 @@ class UserStore:
         username = (username or "").strip()
         if not USERNAME_RE.fullmatch(username):
             raise UserError("USERNAME_INVALID")
-        if username.casefold() == SUPERADMIN_USERNAME:
-            # Never allow an ordinary administrator to create a new 'gt'
-            # identity that would acquire special privileges at next startup.
-            raise UserError("SUPERADMIN_RESERVED")
         if role not in ("admin", "member"):
             raise UserError("ROLE_INVALID")
         self.validate_new_password(password)
