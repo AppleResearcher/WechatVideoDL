@@ -37,7 +37,7 @@
       </form>
       {% endif %}
       {% if user.is_superadmin %}
-      <p class="user-self-note user-protected-note" role="note">此账号为系统唯一超级管理员。其他管理员无法重置密码、调整权限或停用；gt 可在「我的账号」验证当前密码后自行修改密码。</p>
+      <p class="user-self-note user-protected-note" role="note">此账号为系统唯一超级管理员。其他管理员无法重置密码、调整权限或停用；该超级管理员本人可在「我的账号」验证当前密码后自行修改密码。</p>
       {% elif user.id != current_user().id %}
       <form method="post" action="{{ url_for('admin_change_role', uid=user.id) }}">
         <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">

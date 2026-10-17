@@ -57,6 +57,7 @@ BROWSERLESS_URL = os.environ.get("BROWSERLESS_URL", "http://browserless:3000").r
 BROWSERLESS_TOKEN = os.environ.get("BROWSERLESS_TOKEN", "")
 WEBUI_USERNAME = os.environ.get("WEBUI_USERNAME", "admin")
 WEBUI_PASSWORD = os.environ.get("WEBUI_PASSWORD", "")
+SUPERADMIN_BOOTSTRAP_USERNAME = os.environ.get("SUPERADMIN_BOOTSTRAP_USERNAME", "").strip()
 SECRET_KEY = os.environ.get("SECRET_KEY") or secrets.token_hex(32)
 PUBLIC_BASE_URL = os.environ.get("PUBLIC_BASE_URL", "").rstrip("/")
 BROWSER_TIMEOUT = int(os.environ.get("BROWSER_TIMEOUT", "300"))
@@ -492,12 +493,18 @@ def get_user_store() -> UserStore:
     if USER_STORE is None or USER_STORE.db_path != target:
         with USER_STORE_LOCK:
             if USER_STORE is None or USER_STORE.db_path != target:
-                store = UserStore(target, seed_username=WEBUI_USERNAME, seed_password=WEBUI_PASSWORD)
+                store = UserStore(
+                    target, seed_username=WEBUI_USERNAME, seed_password=WEBUI_PASSWORD,
+                    bootstrap_superadmin_username=SUPERADMIN_BOOTSTRAP_USERNAME or WEBUI_USERNAME,
+                )
                 USER_STORE = store
-                first_admin = next((user for user in store.list_users() if user["role"] == "admin"), None)
-                if first_admin:
-                    # Existing history stays visible to its original administrator.
-                    get_history_store().assign_legacy_jobs(first_admin["id"])
+                owner = next(
+                    (user for user in store.list_users() if user["is_superadmin"]), None
+                )
+                if owner:
+                    # Legacy history belongs to the immutable bootstrap owner,
+                    # not whichever administrator sorts first in the user list.
+                    get_history_store().assign_legacy_jobs(owner["id"])
     return USER_STORE
 
 
@@ -816,8 +823,7 @@ def user_message(code: str) -> str:
         "LAST_ADMIN": "必须保留至少一位启用状态的管理员",
         "ROLE_INVALID": "用户角色不正确",
         "USER_NOT_FOUND": "账号不存在",
-        "SUPERADMIN_PROTECTED": "gt 是受保护的超级管理员，其他管理员不能修改其密码、角色或状态",
-        "SUPERADMIN_RESERVED": "gt 为专属超级管理员账号，不能创建同名账号",
+        "SUPERADMIN_PROTECTED": "超级管理员账号受保护，其他管理员不能修改其密码、角色或状态",
         "PERMISSION_DENIED": "当前账号没有执行此操作的权限",
         "CANNOT_EDIT_SELF": "不能在管理页面修改自己的权限或停用自己",
         "CURRENT_PASSWORD_INVALID": "当前密码不正确",
