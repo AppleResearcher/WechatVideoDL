@@ -1,15 +1,14 @@
-"""Private multi-user identity store.
+"""Private multi-user identity and role store.
 
-Only the first installation seeds the environment's legacy administrator.
-After seeding, authentication uses password hashes in /data/auth.db exclusively.
+The unique 'gt' account is the protected super administrator: the database
+retains role='admin' for compatibility, and marks it with is_superadmin=1.
+All account mutations require an authenticated actor at the store layer.
 """
 from __future__ import annotations
 
 import os
 import re
-import secrets
 import sqlite3
-import time
 import uuid
 from contextlib import closing
 from datetime import datetime, timezone
@@ -20,6 +19,7 @@ from werkzeug.security import check_password_hash, generate_password_hash
 
 USERNAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,31}$")
 MIN_PASSWORD_LENGTH = 8
+SUPERADMIN_USERNAME = "gt"
 
 
 class UserError(ValueError):
@@ -42,7 +42,7 @@ class UserStore:
         return conn
 
     def _initialize(self, username: str, password: str):
-        # Do not re-seed if the administrator later changes the initial password.
+        # Never reset passwords when restarting the service.
         with closing(self._connect()) as conn:
             conn.execute("BEGIN IMMEDIATE")
             try:
@@ -53,42 +53,91 @@ class UserStore:
                         password_hash TEXT NOT NULL,
                         role TEXT NOT NULL CHECK (role IN ('admin','member')),
                         active INTEGER NOT NULL DEFAULT 1 CHECK (active IN (0,1)),
+                        is_superadmin INTEGER NOT NULL DEFAULT 0 CHECK (is_superadmin IN (0,1)),
                         session_version INTEGER NOT NULL DEFAULT 0,
                         created_at TEXT NOT NULL,
                         updated_at TEXT NOT NULL
                     )
                 """)
+                columns = {item["name"] for item in conn.execute("PRAGMA table_info(users)")}
+                if "is_superadmin" not in columns:
+                    conn.execute(
+                        "ALTER TABLE users ADD COLUMN is_superadmin INTEGER NOT NULL DEFAULT 0 "
+                        "CHECK (is_superadmin IN (0,1))"
+                    )
                 if conn.execute("SELECT count(*) FROM users").fetchone()[0] == 0:
                     if not username.strip() or not password:
                         raise UserError("ADMIN_BOOTSTRAP_CREDENTIALS_REQUIRED")
                     stamp = now_iso()
                     conn.execute(
-                        """INSERT INTO users(id,username,password_hash,role,active,session_version,created_at,updated_at)
+                        """INSERT INTO users(
+                           id,username,password_hash,role,active,session_version,created_at,updated_at)
                            VALUES(?,?,?,'admin',1,0,?,?)""",
                         (uuid.uuid4().hex, username.strip(),
                          generate_password_hash(password, method="scrypt"), stamp, stamp),
                     )
+
+                # The gt identity already exists on the production system.
+                # Bind protection to its durable user ID, not to a screen label.
+                gt = conn.execute(
+                    "SELECT id,role,active,is_superadmin FROM users "
+                    "WHERE username=? COLLATE NOCASE",
+                    (SUPERADMIN_USERNAME,),
+                ).fetchone()
+                other = conn.execute(
+                    "SELECT id FROM users WHERE is_superadmin=1"
+                ).fetchall()
+                if other and (gt is None or any(item["id"] != gt["id"] for item in other)):
+                    raise UserError("SUPERADMIN_CONFLICT")
+                if gt and (gt["role"] != "admin" or not gt["active"] or not gt["is_superadmin"]):
+                    conn.execute(
+                        """UPDATE users SET role='admin',active=1,is_superadmin=1,
+                           session_version=session_version+1,updated_at=? WHERE id=?""",
+                        (now_iso(), gt["id"]),
+                    )
+                conn.execute(
+                    "CREATE UNIQUE INDEX IF NOT EXISTS idx_users_single_superadmin "
+                    "ON users(is_superadmin) WHERE is_superadmin=1"
+                )
+                # Defense in depth: even accidental direct UPDATE/DELETE of
+                # a superadmin row must not demote, disable or erase it.
+                conn.execute("""
+                    CREATE TRIGGER IF NOT EXISTS protect_superadmin_fields
+                    BEFORE UPDATE OF username,role,active,is_superadmin ON users
+                    WHEN OLD.is_superadmin=1 AND (
+                        NEW.username<>OLD.username OR NEW.role<>'admin'
+                        OR NEW.active<>1 OR NEW.is_superadmin<>1
+                    )
+                    BEGIN SELECT RAISE(ABORT, 'SUPERADMIN_PROTECTED'); END
+                """)
+                conn.execute("""
+                    CREATE TRIGGER IF NOT EXISTS protect_superadmin_delete
+                    BEFORE DELETE ON users WHEN OLD.is_superadmin=1
+                    BEGIN SELECT RAISE(ABORT, 'SUPERADMIN_PROTECTED'); END
+                """)
                 conn.commit()
             except Exception:
                 conn.rollback()
                 raise
-        # Password hashes are not readable by other users on the Mac mini.
         if os.name != "nt":
             os.chmod(self.db_path, 0o600)
 
-    def _public(self, row) -> dict[str, Any] | None:
+    @staticmethod
+    def _public(row) -> dict[str, Any] | None:
         if row is None:
             return None
         data = dict(row)
         data["active"] = bool(data.get("active"))
+        data["is_superadmin"] = bool(data.get("is_superadmin"))
         data.pop("password_hash", None)
         return data
 
     def list_users(self):
         with closing(self._connect()) as conn:
             rows = conn.execute(
-                """SELECT id,username,role,active,session_version,created_at,updated_at
-                     FROM users ORDER BY created_at,username"""
+                """SELECT id,username,role,active,is_superadmin,
+                          session_version,created_at,updated_at
+                   FROM users ORDER BY created_at,username"""
             ).fetchall()
         return [self._public(r) for r in rows]
 
@@ -99,12 +148,16 @@ class UserStore:
 
     def get_user_by_name(self, name: str):
         with closing(self._connect()) as conn:
-            row = conn.execute("SELECT * FROM users WHERE username=? COLLATE NOCASE", (name,)).fetchone()
+            row = conn.execute(
+                "SELECT * FROM users WHERE username=? COLLATE NOCASE", (name,)
+            ).fetchone()
         return self._public(row)
 
     def authenticate(self, username: str, password: str):
         with closing(self._connect()) as conn:
-            row = conn.execute("SELECT * FROM users WHERE username=? COLLATE NOCASE", (username,)).fetchone()
+            row = conn.execute(
+                "SELECT * FROM users WHERE username=? COLLATE NOCASE", (username,)
+            ).fetchone()
         if not row or not row["active"] or not password:
             return None
         if not check_password_hash(row["password_hash"], password):
@@ -125,6 +178,10 @@ class UserStore:
         username = (username or "").strip()
         if not USERNAME_RE.fullmatch(username):
             raise UserError("USERNAME_INVALID")
+        if username.casefold() == SUPERADMIN_USERNAME:
+            # Never allow an ordinary administrator to create a new 'gt'
+            # identity that would acquire special privileges at next startup.
+            raise UserError("SUPERADMIN_RESERVED")
         if role not in ("admin", "member"):
             raise UserError("ROLE_INVALID")
         self.validate_new_password(password)
@@ -133,7 +190,8 @@ class UserStore:
         with closing(self._connect()) as conn, conn:
             try:
                 conn.execute(
-                    """INSERT INTO users(id,username,password_hash,role,active,session_version,created_at,updated_at)
+                    """INSERT INTO users(
+                       id,username,password_hash,role,active,session_version,created_at,updated_at)
                        VALUES(?,?,?,?,1,0,?,?)""",
                     (uid, username, generate_password_hash(password, method="scrypt"), role, stamp, stamp),
                 )
@@ -141,35 +199,74 @@ class UserStore:
                 raise UserError("USERNAME_TAKEN") from exc
         return self.get_user(uid)
 
-    def set_password(self, uid: str, password: str):
-        self.validate_new_password(password)
-        encoded = generate_password_hash(password, method="scrypt")
-        with closing(self._connect()) as conn, conn:
-            cur = conn.execute(
-                """UPDATE users SET password_hash=?,session_version=session_version+1,updated_at=?
-                   WHERE id=?""",
-                (encoded, now_iso(), uid),
-            )
-            if not cur.rowcount:
-                raise UserError("USER_NOT_FOUND")
+    @staticmethod
+    def _actor(conn, actor_user_id: str):
+        actor = conn.execute(
+            "SELECT id,role,active FROM users WHERE id=?", (actor_user_id,)
+        ).fetchone()
+        if not actor or not actor["active"]:
+            raise UserError("PERMISSION_DENIED")
+        return actor
 
-    def set_role(self, uid: str, role: str):
+    def set_password(
+        self, uid: str, password: str, *, actor_user_id: str,
+        current_password: str | None = None
+    ):
+        self.validate_new_password(password)
+        with closing(self._connect()) as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            try:
+                actor = self._actor(conn, actor_user_id)
+                target = conn.execute("SELECT * FROM users WHERE id=?", (uid,)).fetchone()
+                if not target:
+                    raise UserError("USER_NOT_FOUND")
+                if target["is_superadmin"] and actor["id"] != uid:
+                    raise UserError("SUPERADMIN_PROTECTED")
+                if actor["id"] == uid:
+                    if not current_password or not check_password_hash(
+                        target["password_hash"], current_password
+                    ):
+                        raise UserError("CURRENT_PASSWORD_INVALID")
+                elif actor["role"] != "admin":
+                    raise UserError("PERMISSION_DENIED")
+                encoded = generate_password_hash(password, method="scrypt")
+                conn.execute(
+                    """UPDATE users SET password_hash=?,
+                       session_version=session_version+1,updated_at=? WHERE id=?""",
+                    (encoded, now_iso(), uid),
+                )
+                conn.commit()
+            except Exception:
+                conn.rollback()
+                raise
+
+    def set_role(self, uid: str, role: str, *, actor_user_id: str):
         if role not in ("admin", "member"):
             raise UserError("ROLE_INVALID")
         with closing(self._connect()) as conn:
             conn.execute("BEGIN IMMEDIATE")
             try:
-                existing = conn.execute("SELECT id,role,active FROM users WHERE id=?", (uid,)).fetchone()
-                if not existing:
+                actor = self._actor(conn, actor_user_id)
+                if actor["role"] != "admin":
+                    raise UserError("PERMISSION_DENIED")
+                target = conn.execute(
+                    "SELECT id,role,active,is_superadmin FROM users WHERE id=?", (uid,)
+                ).fetchone()
+                if not target:
                     raise UserError("USER_NOT_FOUND")
-                if existing["role"] == "admin" and role != "admin" and existing["active"]:
+                if target["is_superadmin"]:
+                    raise UserError("SUPERADMIN_PROTECTED")
+                if uid == actor_user_id:
+                    raise UserError("CANNOT_EDIT_SELF")
+                if target["role"] == "admin" and role != "admin" and target["active"]:
                     count = conn.execute(
                         "SELECT count(*) FROM users WHERE active=1 AND role='admin'"
                     ).fetchone()[0]
                     if count <= 1:
                         raise UserError("LAST_ADMIN")
                 conn.execute(
-                    """UPDATE users SET role=?,session_version=session_version+1,updated_at=? WHERE id=?""",
+                    """UPDATE users SET role=?,session_version=session_version+1,updated_at=?
+                       WHERE id=?""",
                     (role, now_iso(), uid),
                 )
                 conn.commit()
@@ -177,21 +274,31 @@ class UserStore:
                 conn.rollback()
                 raise
 
-    def set_active(self, uid: str, active: bool):
+    def set_active(self, uid: str, active: bool, *, actor_user_id: str):
         with closing(self._connect()) as conn:
             conn.execute("BEGIN IMMEDIATE")
             try:
-                existing = conn.execute("SELECT id,role,active FROM users WHERE id=?", (uid,)).fetchone()
-                if not existing:
+                actor = self._actor(conn, actor_user_id)
+                if actor["role"] != "admin":
+                    raise UserError("PERMISSION_DENIED")
+                target = conn.execute(
+                    "SELECT id,role,active,is_superadmin FROM users WHERE id=?", (uid,)
+                ).fetchone()
+                if not target:
                     raise UserError("USER_NOT_FOUND")
-                if existing["role"] == "admin" and existing["active"] and not active:
+                if target["is_superadmin"]:
+                    raise UserError("SUPERADMIN_PROTECTED")
+                if uid == actor_user_id:
+                    raise UserError("CANNOT_EDIT_SELF")
+                if target["role"] == "admin" and target["active"] and not active:
                     count = conn.execute(
                         "SELECT count(*) FROM users WHERE active=1 AND role='admin'"
                     ).fetchone()[0]
                     if count <= 1:
                         raise UserError("LAST_ADMIN")
                 conn.execute(
-                    """UPDATE users SET active=?,session_version=session_version+1,updated_at=? WHERE id=?""",
+                    """UPDATE users SET active=?,session_version=session_version+1,updated_at=?
+                       WHERE id=?""",
                     (1 if active else 0, now_iso(), uid),
                 )
                 conn.commit()
