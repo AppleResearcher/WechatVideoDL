@@ -1,0 +1,98 @@
+import unittest
+
+import server_docker.app as appmod
+
+
+class ProxyUrlTests(unittest.TestCase):
+    def setUp(self):
+        self.old_public = getattr(appmod, "PUBLIC_BASE_URL", "")
+        self.old_trust = getattr(appmod, "TRUST_PROXY_HEADERS", False)
+        self.old_hops = getattr(appmod, "PROXY_HOPS", 1)
+
+    def tearDown(self):
+        appmod.PUBLIC_BASE_URL = self.old_public
+        appmod.TRUST_PROXY_HEADERS = self.old_trust
+        appmod.PROXY_HOPS = self.old_hops
+
+    def test_direct_host_uses_request_origin(self):
+        appmod.PUBLIC_BASE_URL = ""
+        appmod.TRUST_PROXY_HEADERS = False
+        with appmod.app.test_request_context("/", base_url="http://10.0.0.2:18770"):
+            links = appmod.build_file_links("wxv_000001.mp4")
+        self.assertEqual(links["download_path"], "/files/wxv_000001.mp4")
+        self.assertEqual(links["download_url"], "http://10.0.0.2:18770/files/wxv_000001.mp4")
+
+    def test_untrusted_forwarded_headers_are_ignored(self):
+        appmod.PUBLIC_BASE_URL = ""
+        appmod.TRUST_PROXY_HEADERS = False
+        headers = {"X-Forwarded-Proto": "https", "X-Forwarded-Host": "evil.example"}
+        with appmod.app.test_request_context("/", base_url="http://10.0.0.2:18770", headers=headers):
+            links = appmod.build_file_links("wxv_000001.txt")
+        self.assertEqual(links["download_url"], "http://10.0.0.2:18770/files/wxv_000001.txt")
+
+    def test_trusted_forwarded_scheme_host_and_prefix(self):
+        appmod.PUBLIC_BASE_URL = ""
+        appmod.TRUST_PROXY_HEADERS = True
+        headers = {
+            "X-Forwarded-Proto": "https",
+            "X-Forwarded-Host": "video.example.com",
+            "X-Forwarded-Prefix": "/wechat",
+        }
+        with appmod.app.test_request_context("/", base_url="http://127.0.0.1:8080", headers=headers):
+            links = appmod.build_file_links("wxv_000001.md")
+        self.assertEqual(links["download_path"], "/wechat/files/wxv_000001.md")
+        self.assertEqual(links["download_url"], "https://video.example.com/wechat/files/wxv_000001.md")
+
+    def test_two_proxy_hops_selects_second_value_from_right(self):
+        appmod.PUBLIC_BASE_URL = ""
+        appmod.TRUST_PROXY_HEADERS = True
+        appmod.PROXY_HOPS = 2
+        headers = {
+            "X-Forwarded-Proto": "https, http",
+            "X-Forwarded-Host": "public.example.com, internal.example",
+            "X-Forwarded-Prefix": "/public, /internal",
+        }
+        with appmod.app.test_request_context("/", base_url="http://127.0.0.1:8080", headers=headers):
+            links = appmod.build_file_links("wxv_000001.md")
+        self.assertEqual(links["download_path"], "/public/files/wxv_000001.md")
+        self.assertEqual(links["download_url"], "https://public.example.com/public/files/wxv_000001.md")
+
+    def test_public_base_url_overrides_request_and_forwarded_headers(self):
+        appmod.PUBLIC_BASE_URL = "https://downloads.example.com/tools/wx"
+        appmod.TRUST_PROXY_HEADERS = True
+        headers = {"X-Forwarded-Proto": "http", "X-Forwarded-Host": "ignored.example"}
+        with appmod.app.test_request_context("/", base_url="http://127.0.0.1:8080", headers=headers):
+            links = appmod.build_file_links("wxv_000001.mp4")
+        self.assertEqual(links["download_path"], "/files/wxv_000001.mp4")
+        self.assertEqual(links["download_url"], "https://downloads.example.com/tools/wx/files/wxv_000001.mp4")
+
+    def test_thumbnail_and_bundle_links_preserve_trusted_prefix(self):
+        appmod.PUBLIC_BASE_URL = ""
+        appmod.TRUST_PROXY_HEADERS = True
+        headers = {
+            "X-Forwarded-Proto": "https",
+            "X-Forwarded-Host": "video.example.com",
+            "X-Forwarded-Prefix": "/wechat",
+        }
+        job = {
+            "id": "wxv_000321", "input_url": "https://weixin.qq.com/sph/demo",
+            "video_title": "标题", "status": "completed", "output_format": "md",
+            "thumbnail_filename": "标题__000321.jpg", "retry_errors": [],
+        }
+        with appmod.app.test_request_context("/", base_url="http://127.0.0.1:8080", headers=headers):
+            body = appmod.serialize_job(job)
+        self.assertEqual(body["thumbnail"]["download_path"], "/wechat/files/%E6%A0%87%E9%A2%98__000321.jpg")
+        self.assertEqual(body["thumbnail"]["download_url"], "https://video.example.com/wechat/files/%E6%A0%87%E9%A2%98__000321.jpg")
+        self.assertEqual(body["bundle"]["download_path"], "/wechat/api/history/wxv_000321/bundle")
+        self.assertEqual(body["bundle"]["download_url"], "https://video.example.com/wechat/api/history/wxv_000321/bundle")
+
+    def test_bundle_absolute_url_uses_public_base_url_path(self):
+        appmod.PUBLIC_BASE_URL = "https://downloads.example.com/tools/wx"
+        appmod.TRUST_PROXY_HEADERS = False
+        with appmod.app.test_request_context("/", base_url="http://127.0.0.1:8080"):
+            links = appmod.build_route_links("/api/history/wxv_000001/bundle")
+        self.assertEqual(links["download_url"], "https://downloads.example.com/tools/wx/api/history/wxv_000001/bundle")
+
+
+if __name__ == "__main__":
+    unittest.main()

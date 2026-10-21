@@ -1,0 +1,60 @@
+<!doctype html>
+<html lang="zh-CN" data-theme="system">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <meta name="color-scheme" content="light dark">
+  <meta name="csrf-token" content="{{ csrf_token() }}">
+  <title>{% block title %}WechatVideoDL{% endblock %}</title>
+  <script>
+    (() => {
+      const saved = localStorage.getItem('wvd-theme') || 'system';
+      document.documentElement.dataset.theme = saved;
+    })();
+  </script>
+  <link rel="icon" href="{{ url_for('static', filename='logo.svg') }}" type="image/svg+xml">
+  <link rel="stylesheet" href="{{ url_for('static', filename='app.css') }}">
+</head>
+<body data-page="{% block page %}base{% endblock %}" data-base-path="{{ request.script_root }}">
+  {% block shell %}
+  <div class="app-shell">
+    <header class="app-header">
+      <a class="brand" href="{{ url_for('index') }}" aria-label="WechatVideoDL 首页">
+        <img src="{{ url_for('static', filename='logo.svg') }}" alt="WechatVideoDL Logo" class="brand-logo">
+        <span class="brand-copy">
+          <strong>WechatVideoDL</strong>
+          <small>Video intelligence workspace</small>
+        </span>
+      </a>
+      <nav class="primary-nav" aria-label="主导航">
+        <a class="nav-link {% if request.path == '/' %}active{% endif %}" href="{{ url_for('index') }}" {% if request.path == '/' %}aria-current="page"{% endif %}>工作台</a>
+        <a class="nav-link {% if request.path.startswith('/history') %}active{% endif %}" href="{{ url_for('history_page') }}" {% if request.path.startswith('/history') %}aria-current="page"{% endif %}>历史记录</a>
+        <a class="nav-link {% if request.path.startswith('/batches') %}active{% endif %}" href="{{ url_for('batches_page') }}" {% if request.path.startswith('/batches') %}aria-current="page"{% endif %}>批量任务</a>
+        <a class="nav-link {% if request.endpoint in ('settings_page', 'account_page', 'admin_users') %}active{% endif %}" href="{{ url_for('settings_page') }}" {% if request.endpoint in ('settings_page', 'account_page', 'admin_users') %}aria-current="page"{% endif %}>设置</a>
+      </nav>
+      <div class="header-utilities">
+        {% if current_user() %}
+        <span class="signed-in-user" aria-label="当前登录账号：{{ current_user().username }}" title="当前登录账号：{{ current_user().username }}">
+          <span class="signed-in-label">当前账号</span><strong>{{ current_user().username }}</strong>
+        </span>
+        <form method="post" action="{{ url_for('logout') }}" class="header-logout-form">
+          <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+          <button type="submit" class="nav-link muted-link header-logout">退出</button>
+        </form>
+        {% endif %}
+      </div>
+    </header>
+    <main class="app-main">{% block content %}{% endblock %}</main>
+    {% include "_gt_custom_edition_footer.html" %}
+  </div>
+  {% endblock %}
+  <dialog id="video-play-dialog" class="video-play-dialog" aria-labelledby="video-play-heading">
+    <div class="video-play-heading"><strong id="video-play-heading">播放视频</strong><button id="video-play-close" type="button" class="text-button">关闭</button></div>
+    <video id="video-play-element" controls playsinline preload="metadata" aria-label="视频播放窗口"></video>
+    <p id="video-source-notice" class="video-play-error hidden" role="status"></p>
+    <p id="video-play-error" class="video-play-error hidden" role="alert">当前视频无法播放，授权链接可能已过期。请从微信中查看或重新解析。</p>
+    <p class="video-play-note">视频由本项目授权访问的内容提供；播放失败时请尝试在微信中打开原链接。</p>
+  </dialog>
+  <script src="{{ url_for('static', filename='app.js') }}" defer></script>
+</body>
+</html>

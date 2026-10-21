@@ -1,0 +1,35 @@
+services:
+  app:
+    build: .
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:${APP_PORT:-8080}:8080"
+    environment:
+      BROWSERLESS_URL: ${BROWSERLESS_URL:-http://browserless:3000}
+      BROWSERLESS_TOKEN: ${BROWSERLESS_TOKEN}
+      WEBUI_USERNAME: ${WEBUI_USERNAME}
+      WEBUI_PASSWORD: ${WEBUI_PASSWORD}
+      SUPERADMIN_BOOTSTRAP_USERNAME: ${SUPERADMIN_BOOTSTRAP_USERNAME:-}
+      WEBUI_COOKIE_SECURE: ${WEBUI_COOKIE_SECURE:-true}
+      SECRET_KEY: ${SECRET_KEY}
+      PUBLIC_BASE_URL: ${PUBLIC_BASE_URL:-}
+      TRUST_PROXY_HEADERS: ${TRUST_PROXY_HEADERS:-false}
+      PROXY_HOPS: ${PROXY_HOPS:-1}
+      MAX_PARSE_ATTEMPTS: ${MAX_PARSE_ATTEMPTS:-3}
+      YUANBAO_COOKIE_FILE: /data/yuanbao.tencent.com_cookies.txt
+      YUANBAO_SESSION_FILE: /data/yuanbao_session.json
+      BROWSERLESS_FUNCTION_FILE: /app/browserless_function.js
+      DATA_DIR: /data
+      DOWNLOAD_DIR: /data/downloads
+      BROWSER_TIMEOUT: "${BROWSER_TIMEOUT:-300}"
+      DOWNLOAD_TIMEOUT: "300"
+      LOCAL_TRANSCRIPTION_ENABLED: "${LOCAL_TRANSCRIPTION_ENABLED:-false}"
+      LOCAL_TRANSCRIPTION_TIMEOUT: "${LOCAL_TRANSCRIPTION_TIMEOUT:-4500}"
+      LOCAL_TRANSCRIPTION_MODEL: "${LOCAL_TRANSCRIPTION_MODEL:-base}"
+    volumes:
+      - ./data:/data
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    mem_limit: "512m"
+    networks:
+      default: {}
